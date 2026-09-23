@@ -19,7 +19,7 @@ internal static class PairDirectory
             {
                 Content = new StringContent(JsonSerializer.Serialize(new { code }), Encoding.UTF8, "application/json")
             };
-            request.Headers.UserAgent.ParseAdd("Deskspan/0.0.1");
+            request.Headers.UserAgent.ParseAdd("Deskspan/0.0.2");
             using var response = await Http.SendAsync(request, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception)
@@ -32,7 +32,7 @@ internal static class PairDirectory
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Delete, Api(server, "/api/v1/pair/" + Uri.EscapeDataString(code)));
-            request.Headers.UserAgent.ParseAdd("Deskspan/0.0.1");
+            request.Headers.UserAgent.ParseAdd("Deskspan/0.0.2");
             using var response = await Http.SendAsync(request).ConfigureAwait(false);
         }
         catch (Exception)
@@ -47,7 +47,7 @@ internal static class PairDirectory
             using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             limit.CancelAfter(TimeSpan.FromSeconds(4));
             using var request = new HttpRequestMessage(HttpMethod.Get, Api(server, "/api/v1/pair/" + Uri.EscapeDataString(code)));
-            request.Headers.UserAgent.ParseAdd("Deskspan/0.0.1");
+            request.Headers.UserAgent.ParseAdd("Deskspan/0.0.2");
             using var response = await Http.SendAsync(request, limit.Token).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
                 return null;

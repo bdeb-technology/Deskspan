@@ -642,7 +642,7 @@ public sealed class ShareController : IDisposable
             _cursorY = Math.Clamp(_cursorY + dy, screen.Y, screen.Y + Math.Max(1, screen.Height) - 1);
             x = screen.NormalizeX(_cursorX);
             y = screen.NormalizeY(_cursorY);
-            sequence = (uint)++_sequence;
+            sequence = (uint)Interlocked.Increment(ref _sequence);
         }
 
         _node.SendMouse(sequence, x, y);
@@ -846,7 +846,6 @@ public sealed class ShareController : IDisposable
         var screen = RemoteScreen();
         _cursorX = screen.X + screen.Width / 2;
         _cursorY = screen.Y + screen.Height / 2;
-        _sequence = 1;
         ApplyCapture();
         if (_share != ControlShare.Keyboard)
             SendPointer();
@@ -862,7 +861,7 @@ public sealed class ShareController : IDisposable
     private void SendPointer()
     {
         var screen = RemoteScreen();
-        _node.SendMouse((uint)Math.Max(1, _sequence), screen.NormalizeX(_cursorX), screen.NormalizeY(_cursorY));
+        _node.SendMouse((uint)Interlocked.Increment(ref _sequence), screen.NormalizeX(_cursorX), screen.NormalizeY(_cursorY));
     }
 
     private string ControllingDetail() => _share switch
