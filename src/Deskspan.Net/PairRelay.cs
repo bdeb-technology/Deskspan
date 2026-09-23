@@ -18,7 +18,7 @@ public static class PairRelay
     public static async Task<TcpClient> ConnectAsync(string host, int port, bool hosting, string code, CancellationToken cancellationToken, TimeSpan? wait = null)
     {
         if (!TryCode(code, out var digits))
-            throw new ArgumentException("Enter the 6-digit pairing code.");
+            throw new ArgumentException("The pairing code is invalid.");
         var client = new TcpClient { NoDelay = true };
         try
         {

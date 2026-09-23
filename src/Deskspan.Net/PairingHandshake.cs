@@ -1,9 +1,12 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Deskspan.Net;
 
 public readonly record struct PairedSecrets(Guid PeerId, string PeerName, byte[] PeerPublicKey, SessionKeys Keys);
+
+public sealed class PairingException(string message) : InvalidOperationException(message);
 
 public sealed class QuickConnectRequest
 {
@@ -11,6 +14,7 @@ public sealed class QuickConnectRequest
 
     public required Guid PeerId { get; init; }
     public required string PeerName { get; init; }
+    public required string VerifyCode { get; init; }
 
     internal Task<bool> Decision => _decision.Task;
 
@@ -21,174 +25,286 @@ public sealed class QuickConnectRequest
 
 public static class PairingHandshake
 {
-    public static async Task<PairedSecrets> JoinQuickAsync(Stream stream, DeviceIdentity self, CancellationToken cancellationToken)
+    public const int CodeDigits = 9;
+    public const int RoutingDigits = 6;
+    private const int ConfirmLength = 32;
+    private const int NonceLength = 16;
+    private const byte Accepted = 0;
+    private const byte Refused = 1;
+    private static readonly TimeSpan StepTimeout = TimeSpan.FromSeconds(30);
+
+    private readonly record struct Party(Guid Id, byte[] PublicKey, string Name, byte[] Encoded);
+
+    public static string NewCode()
     {
-        var nameBytes = Encoding.UTF8.GetBytes(self.Name);
-        var body = new byte[16 + 32 + 1 + nameBytes.Length];
-        self.IdBytes.CopyTo(body, 0);
-        self.PublicKey.CopyTo(body, 16);
-        body[16 + 32] = (byte)nameBytes.Length;
-        nameBytes.CopyTo(body, 16 + 32 + 1);
-        await WriteFrameAsync(stream, Protocol.QuickMagic.ToArray(), body, cancellationToken).ConfigureAwait(false);
-
-        var status = new byte[1];
-        await ReadExactlyAsync(stream, status, cancellationToken).ConfigureAwait(false);
-        if (status[0] != 0)
-            throw new InvalidOperationException("The other computer did not allow the connection.");
-
-        var idBytes = new byte[16];
-        var publicKey = new byte[32];
-        var nameLength = new byte[1];
-        await ReadExactlyAsync(stream, idBytes, cancellationToken).ConfigureAwait(false);
-        await ReadExactlyAsync(stream, publicKey, cancellationToken).ConfigureAwait(false);
-        await ReadExactlyAsync(stream, nameLength, cancellationToken).ConfigureAwait(false);
-        if (nameLength[0] > Protocol.MaxNameBytes)
-            throw new InvalidDataException("Name is invalid.");
-        var peerName = new byte[nameLength[0]];
-        await ReadExactlyAsync(stream, peerName, cancellationToken).ConfigureAwait(false);
-        var peerId = new Guid(idBytes);
-        var name = Encoding.UTF8.GetString(peerName);
-        return new PairedSecrets(peerId, name, publicKey, self.KeysWith(publicKey, peerId.ToByteArray()));
+        var digits = new char[CodeDigits];
+        for (var i = 0; i < digits.Length; i++)
+            digits[i] = (char)('0' + RandomNumberGenerator.GetInt32(10));
+        return new string(digits);
     }
 
-    public static async Task<PairedSecrets?> TryHostQuickAsync(byte[] body, Stream stream, Func<QuickConnectRequest, Task<bool>> approve, DeviceIdentity self, CancellationToken cancellationToken)
+    public static string NormalizeCode(string? code)
     {
-        if (body.Length < 16 + 32 + 1)
-            return null;
+        var digits = new string((code ?? "").Where(char.IsAsciiDigit).ToArray());
+        if (digits.Length != CodeDigits)
+            throw new ArgumentException("Enter the 9-digit pairing code.");
+        return digits;
+    }
+
+    public static string RoutingPart(string code) => NormalizeCode(code)[..RoutingDigits];
+
+    public static string FormatCode(string code) =>
+        code.Length == CodeDigits ? code[..3] + " " + code[3..6] + " " + code[6..] : code;
+
+    public static async Task<PairedSecrets> JoinAsync(Stream stream, string code, DeviceIdentity self, CancellationToken cancellationToken)
+    {
+        var password = NormalizeCode(code);
+        var me = Encode(self);
+        using var step = StepToken(cancellationToken);
+        var token = step.Token;
+
+        var spake = new Spake2(true, password);
+        await WriteFrameAsync(stream, Protocol.PairMagic.ToArray(), [.. me, .. spake.Share], token).ConfigureAwait(false);
+
+        if (await ReadStatusAsync(stream, token).ConfigureAwait(false) != Accepted)
+            throw new PairingException("That code is not active on the other PC. Create a new code there and try again.");
+        var reply = await ReadBodyAsync(stream, token).ConfigureAwait(false);
         var offset = 0;
-        var peerId = new Guid(body.AsSpan(offset, 16));
-        offset += 16;
-        var peerPublic = body.AsSpan(offset, 32).ToArray();
-        offset += 32;
-        var name = ReadName(body, ref offset);
-        var request = new QuickConnectRequest { PeerId = peerId, PeerName = name };
+        var host = ReadParty(reply, ref offset);
+        var hostShare = Take(reply, ref offset, Spake2.ShareLength);
+        var hostConfirm = Take(reply, ref offset, ConfirmLength);
+        if (offset != reply.Length)
+            throw new InvalidDataException("Pairing reply is invalid.");
+
+        var keys = spake.Finish(hostShare, me, host.Encoded);
+        if (!CryptographicOperations.FixedTimeEquals(hostConfirm, keys.PeerConfirmation))
+            throw new PairingException("The code did not match. Create a new code on the other PC and try again.");
+
+        await stream.WriteAsync(keys.OwnConfirmation, token).ConfigureAwait(false);
+        await stream.FlushAsync(token).ConfigureAwait(false);
+        if (await ReadStatusAsync(stream, token).ConfigureAwait(false) != Accepted)
+            throw new PairingException("The other PC did not accept the pairing. Create a new code there and try again.");
+        return Secrets(self, host);
+    }
+
+    public static Task<PairedSecrets> HostAsync(Stream stream, string code, DeviceIdentity self, CancellationToken cancellationToken)
+    {
+        var password = NormalizeCode(code);
+        var used = 0;
+        return HostCoreAsync(stream, () => Interlocked.Exchange(ref used, 1) == 0 ? password : null, self, cancellationToken);
+    }
+
+    public static async Task<PairedSecrets?> TryHostAsync(Stream stream, Func<string?> claimCode, DeviceIdentity self, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await HostCoreAsync(stream, claimCode, self, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is PairingException or InvalidDataException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<PairedSecrets> HostCoreAsync(Stream stream, Func<string?> claimCode, DeviceIdentity self, CancellationToken cancellationToken)
+    {
+        using var step = StepToken(cancellationToken);
+        var token = step.Token;
+        var request = await ReadFrameAsync(stream, Protocol.PairMagic.ToArray(), token).ConfigureAwait(false);
+        var offset = 0;
+        var joiner = ReadParty(request, ref offset);
+        var joinerShare = Take(request, ref offset, Spake2.ShareLength);
+        if (offset != request.Length)
+            throw new InvalidDataException("Pairing request is invalid.");
+
+        var password = claimCode();
+        if (password == null)
+        {
+            await WriteStatusAsync(stream, Refused, token).ConfigureAwait(false);
+            throw new PairingException("No pairing code is active.");
+        }
+
+        var me = Encode(self);
+        var spake = new Spake2(false, password);
+        var keys = spake.Finish(joinerShare, joiner.Encoded, me);
+        var reply = new byte[1 + 2 + me.Length + Spake2.ShareLength + ConfirmLength];
+        reply[0] = Accepted;
+        BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(1), (ushort)(reply.Length - 3));
+        me.CopyTo(reply, 3);
+        spake.Share.CopyTo(reply, 3 + me.Length);
+        keys.OwnConfirmation.CopyTo(reply, 3 + me.Length + Spake2.ShareLength);
+        await stream.WriteAsync(reply, token).ConfigureAwait(false);
+        await stream.FlushAsync(token).ConfigureAwait(false);
+
+        var joinerConfirm = new byte[ConfirmLength];
+        await ReadExactlyAsync(stream, joinerConfirm, token).ConfigureAwait(false);
+        if (!CryptographicOperations.FixedTimeEquals(joinerConfirm, keys.PeerConfirmation))
+        {
+            await WriteStatusAsync(stream, Refused, token).ConfigureAwait(false);
+            throw new PairingException("The code did not match.");
+        }
+
+        await WriteStatusAsync(stream, Accepted, token).ConfigureAwait(false);
+        return Secrets(self, joiner);
+    }
+
+    public static async Task<PairedSecrets> JoinQuickAsync(Stream stream, DeviceIdentity self, Action<string>? showVerifyCode, CancellationToken cancellationToken)
+    {
+        var me = Encode(self);
+        var nonce = RandomNumberGenerator.GetBytes(NonceLength);
+        PairedSecrets secrets;
+        string verify;
+        using (var step = StepToken(cancellationToken))
+        {
+            await WriteFrameAsync(stream, Protocol.QuickMagic.ToArray(), [.. me, .. Commit(nonce, me)], step.Token).ConfigureAwait(false);
+            var reply = await ReadBodyAsync(stream, step.Token).ConfigureAwait(false);
+            var offset = 0;
+            var host = ReadParty(reply, ref offset);
+            var hostNonce = Take(reply, ref offset, NonceLength);
+            if (offset != reply.Length)
+                throw new InvalidDataException("Quick connect reply is invalid.");
+            await stream.WriteAsync(nonce, step.Token).ConfigureAwait(false);
+            await stream.FlushAsync(step.Token).ConfigureAwait(false);
+            verify = VerifyCode(me, host.Encoded, nonce, hostNonce);
+            secrets = Secrets(self, host);
+        }
+
+        showVerifyCode?.Invoke(verify);
+        if (await ReadStatusAsync(stream, cancellationToken).ConfigureAwait(false) != Accepted)
+            throw new PairingException("The other computer did not allow the connection.");
+        return secrets;
+    }
+
+    public static async Task<PairedSecrets?> TryHostQuickAsync(Stream stream, Func<QuickConnectRequest, Task<bool>> approve, DeviceIdentity self, CancellationToken cancellationToken)
+    {
+        Party joiner;
+        string verify;
+        var me = Encode(self);
+        using (var step = StepToken(cancellationToken))
+        {
+            var request = await ReadFrameAsync(stream, Protocol.QuickMagic.ToArray(), step.Token).ConfigureAwait(false);
+            var offset = 0;
+            joiner = ReadParty(request, ref offset);
+            var commitment = Take(request, ref offset, 32);
+            if (offset != request.Length)
+                return null;
+
+            var nonce = RandomNumberGenerator.GetBytes(NonceLength);
+            byte[] reply = [.. me, .. nonce];
+            var header = new byte[2];
+            BinaryPrimitives.WriteUInt16LittleEndian(header, (ushort)reply.Length);
+            await stream.WriteAsync(header, step.Token).ConfigureAwait(false);
+            await stream.WriteAsync(reply, step.Token).ConfigureAwait(false);
+            await stream.FlushAsync(step.Token).ConfigureAwait(false);
+
+            var joinerNonce = new byte[NonceLength];
+            await ReadExactlyAsync(stream, joinerNonce, step.Token).ConfigureAwait(false);
+            if (!CryptographicOperations.FixedTimeEquals(commitment, Commit(joinerNonce, joiner.Encoded)))
+                return null;
+            verify = VerifyCode(joiner.Encoded, me, joinerNonce, nonce);
+        }
+
+        var ask = new QuickConnectRequest { PeerId = joiner.Id, PeerName = joiner.Name, VerifyCode = verify };
         bool allowed;
         try
         {
-            allowed = await approve(request).ConfigureAwait(false);
+            allowed = await approve(ask).ConfigureAwait(false);
         }
         catch (Exception)
         {
             allowed = false;
         }
 
-        if (!allowed)
-        {
-            try { await stream.WriteAsync(new byte[] { 1 }, cancellationToken).ConfigureAwait(false); } catch { }
-            return null;
-        }
-
-        await WriteAcceptanceAsync(stream, self, cancellationToken).ConfigureAwait(false);
-        return new PairedSecrets(peerId, name, peerPublic, self.KeysWith(peerPublic, peerId.ToByteArray()));
-    }
-
-    public static Task<PairedSecrets> HostAsync(Stream stream, string code, DeviceIdentity self, CancellationToken cancellationToken)
-    {
-        var expected = ParseCode(code);
-        return HostCoreAsync(stream, given => given == expected, self, cancellationToken);
-    }
-
-    public static async Task<PairedSecrets?> TryHostAsync(Stream stream, Func<uint, bool> codeIsValid, DeviceIdentity self, CancellationToken cancellationToken)
-    {
         try
         {
-            return await HostCoreAsync(stream, codeIsValid, self, cancellationToken).ConfigureAwait(false);
+            await WriteStatusAsync(stream, allowed ? Accepted : Refused, cancellationToken).ConfigureAwait(false);
         }
-        catch (InvalidOperationException)
+        catch (Exception) when (!allowed)
         {
-            return null;
-        }
-    }
-
-    private static async Task<PairedSecrets> HostCoreAsync(Stream stream, Func<uint, bool> codeIsValid, DeviceIdentity self, CancellationToken cancellationToken)
-    {
-        var payload = await ReadPayloadAsync(stream, cancellationToken).ConfigureAwait(false);
-        var offset = 0;
-        var given = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(offset));
-        offset += 4;
-        if (!codeIsValid(given))
-        {
-            await stream.WriteAsync(new byte[] { 1 }, cancellationToken).ConfigureAwait(false);
-            throw new InvalidOperationException("Pairing code was not accepted.");
         }
 
-        var peerId = new Guid(payload.AsSpan(offset, 16));
-        offset += 16;
-        var peerPublic = payload.AsSpan(offset, 32).ToArray();
-        offset += 32;
-        var name = ReadName(payload, ref offset);
-        await WriteAcceptanceAsync(stream, self, cancellationToken).ConfigureAwait(false);
-        return new PairedSecrets(peerId, name, peerPublic, self.KeysWith(peerPublic, peerId.ToByteArray()));
+        return allowed ? Secrets(self, joiner) : null;
     }
 
-    public static async Task<PairedSecrets> JoinAsync(Stream stream, string code, DeviceIdentity self, CancellationToken cancellationToken)
+    internal static string VerifyCode(byte[] joiner, byte[] host, byte[] joinerNonce, byte[] hostNonce)
     {
-        var body = BuildJoinRequest(code, self);
-        await WriteFrameAsync(stream, "DSP1"u8.ToArray(), body, cancellationToken).ConfigureAwait(false);
-
-        var status = new byte[1];
-        await ReadExactlyAsync(stream, status, cancellationToken).ConfigureAwait(false);
-        if (status[0] != 0)
-            throw new InvalidOperationException("Pairing code was not accepted.");
-
-        var idBytes = new byte[16];
-        var publicKey = new byte[32];
-        var nameLength = new byte[1];
-        await ReadExactlyAsync(stream, idBytes, cancellationToken).ConfigureAwait(false);
-        await ReadExactlyAsync(stream, publicKey, cancellationToken).ConfigureAwait(false);
-        await ReadExactlyAsync(stream, nameLength, cancellationToken).ConfigureAwait(false);
-        if (nameLength[0] > Protocol.MaxNameBytes)
-            throw new InvalidDataException("Name is invalid.");
-        var peerName = new byte[nameLength[0]];
-        await ReadExactlyAsync(stream, peerName, cancellationToken).ConfigureAwait(false);
-        var peerId = new Guid(idBytes);
-        var name = Encoding.UTF8.GetString(peerName);
-        return new PairedSecrets(peerId, name, publicKey, self.KeysWith(publicKey, peerId.ToByteArray()));
+        var hash = SHA256.HashData(Spake2.Transcript("Deskspan quick verify"u8.ToArray(), joiner, host, joinerNonce, hostNonce));
+        var value = BinaryPrimitives.ReadUInt32BigEndian(hash) % 1_000_000;
+        return value.ToString("D6");
     }
 
-    private static byte[] BuildJoinRequest(string code, DeviceIdentity self)
+    private static byte[] Commit(byte[] nonce, byte[] party) =>
+        SHA256.HashData(Spake2.Transcript("Deskspan quick commit"u8.ToArray(), nonce, party));
+
+    private static PairedSecrets Secrets(DeviceIdentity self, Party peer) =>
+        new(peer.Id, peer.Name, peer.PublicKey, self.KeysWith(peer.PublicKey, peer.Id.ToByteArray()));
+
+    private static CancellationTokenSource StepToken(CancellationToken cancellationToken)
+    {
+        var step = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        step.CancelAfter(StepTimeout);
+        return step;
+    }
+
+    private static byte[] Encode(DeviceIdentity self)
     {
         var nameBytes = Encoding.UTF8.GetBytes(self.Name);
-        var body = new byte[4 + 16 + 32 + 1 + nameBytes.Length];
-        BinaryPrimitives.WriteUInt32LittleEndian(body, ParseCode(code));
-        self.IdBytes.CopyTo(body, 4);
-        self.PublicKey.CopyTo(body, 4 + 16);
-        body[4 + 16 + 32] = (byte)nameBytes.Length;
-        nameBytes.CopyTo(body, 4 + 16 + 32 + 1);
+        if (nameBytes.Length > Protocol.MaxNameBytes)
+            nameBytes = nameBytes[..Protocol.MaxNameBytes];
+        var body = new byte[16 + 32 + 1 + nameBytes.Length];
+        self.IdBytes.CopyTo(body, 0);
+        self.PublicKey.CopyTo(body, 16);
+        body[48] = (byte)nameBytes.Length;
+        nameBytes.CopyTo(body, 49);
         return body;
     }
 
-    public static uint ParseCode(string code)
+    private static Party ReadParty(byte[] payload, ref int offset)
     {
-        var digits = new string((code ?? "").Where(char.IsDigit).ToArray());
-        if (digits.Length != 6 || !uint.TryParse(digits, out var value))
-            throw new ArgumentException("Enter the 6-digit pairing code.");
-        return value;
+        var start = offset;
+        var id = new Guid(Take(payload, ref offset, 16));
+        var publicKey = Take(payload, ref offset, 32);
+        var name = ReadName(payload, ref offset);
+        return new Party(id, publicKey, name, payload[start..offset]);
     }
 
-    private static async Task WriteAcceptanceAsync(Stream stream, DeviceIdentity self, CancellationToken cancellationToken)
+    private static byte[] Take(byte[] payload, ref int offset, int count)
     {
-        var nameBytes = Encoding.UTF8.GetBytes(self.Name);
-        var body = new byte[1 + 16 + 32 + 1 + nameBytes.Length];
-        body[0] = 0;
-        self.IdBytes.CopyTo(body.AsSpan(1));
-        self.PublicKey.CopyTo(body.AsSpan(1 + 16));
-        body[1 + 16 + 32] = (byte)nameBytes.Length;
-        nameBytes.CopyTo(body.AsSpan(1 + 16 + 32 + 1));
-        await stream.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+        if (offset + count > payload.Length)
+            throw new InvalidDataException("Pairing message is too short.");
+        var part = payload.AsSpan(offset, count).ToArray();
+        offset += count;
+        return part;
+    }
+
+    private static async Task<byte> ReadStatusAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var status = new byte[1];
+        await ReadExactlyAsync(stream, status, cancellationToken).ConfigureAwait(false);
+        return status[0];
+    }
+
+    private static async Task WriteStatusAsync(Stream stream, byte status, CancellationToken cancellationToken)
+    {
+        await stream.WriteAsync(new[] { status }, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task<byte[]> ReadPayloadAsync(Stream stream, CancellationToken cancellationToken)
+    private static async Task<byte[]> ReadFrameAsync(Stream stream, byte[] expectedMagic, CancellationToken cancellationToken)
     {
         var magic = new byte[4];
         await ReadExactlyAsync(stream, magic, cancellationToken).ConfigureAwait(false);
-        if (!magic.AsSpan().SequenceEqual(Protocol.PairMagic))
+        if (!magic.AsSpan().SequenceEqual(expectedMagic))
             throw new InvalidDataException("Unexpected pairing header.");
+        return await ReadBodyAsync(stream, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<byte[]> ReadBodyAsync(Stream stream, CancellationToken cancellationToken)
+    {
         var lengthBytes = new byte[2];
         await ReadExactlyAsync(stream, lengthBytes, cancellationToken).ConfigureAwait(false);
         int length = BinaryPrimitives.ReadUInt16LittleEndian(lengthBytes);
-        if (length < 4 + 16 + 32 + 1 || length > Protocol.MaxPairingFrame)
+        if (length < 16 + 32 + 1 || length > Protocol.MaxPairingFrame)
             throw new InvalidDataException("Pairing payload length is invalid.");
         var body = new byte[length];
         await ReadExactlyAsync(stream, body, cancellationToken).ConfigureAwait(false);
@@ -198,9 +314,9 @@ public static class PairingHandshake
     private static async Task WriteFrameAsync(Stream stream, byte[] magic, byte[] body, CancellationToken cancellationToken)
     {
         var packet = new byte[magic.Length + 2 + body.Length];
-        Buffer.BlockCopy(magic, 0, packet, 0, magic.Length);
+        magic.CopyTo(packet, 0);
         BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(magic.Length), (ushort)body.Length);
-        Buffer.BlockCopy(body, 0, packet, magic.Length + 2, body.Length);
+        body.CopyTo(packet, magic.Length + 2);
         await stream.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
     }

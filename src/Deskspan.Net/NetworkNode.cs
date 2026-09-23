@@ -64,6 +64,7 @@ public sealed class NetworkNode : IAsyncDisposable
 
     public event Action? Changed;
     public event Action<PairedSecrets, string, bool>? Paired;
+    public event Action? PairingFailed;
     public event Action<NetMessage>? MessageReceived;
     public event Action<ushort, ushort>? MouseMoved;
     public event Action? LinkLost;
@@ -156,11 +157,11 @@ public sealed class NetworkNode : IAsyncDisposable
         return await PairingHandshake.JoinAsync(client.GetStream(), code, _self, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<PairedSecrets> PairQuickAsync(IPEndPoint endpoint, CancellationToken cancellationToken)
+    public async Task<PairedSecrets> PairQuickAsync(IPEndPoint endpoint, Action<string>? showVerifyCode, CancellationToken cancellationToken)
     {
         using var client = new TcpClient { NoDelay = true };
         await client.ConnectAsync(endpoint.Address, endpoint.Port, cancellationToken).ConfigureAwait(false);
-        return await PairingHandshake.JoinQuickAsync(client.GetStream(), _self, cancellationToken).ConfigureAwait(false);
+        return await PairingHandshake.JoinQuickAsync(client.GetStream(), _self, showVerifyCode, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task SendAsync(NetMessage message)
@@ -383,16 +384,32 @@ public sealed class NetworkNode : IAsyncDisposable
             var prefixed = new PrefixedStream(stream, magic);
             if (magic.AsSpan().SequenceEqual(Protocol.PairMagic))
             {
-                var secrets = await PairingHandshake.TryHostAsync(prefixed, CodeIsValid, _self, _cancel.Token).ConfigureAwait(false);
-                if (secrets != null)
+                var claimed = false;
+                PairedSecrets? secrets = null;
+                try
                 {
-                    lock (_gate)
-                        _activeCode = null;
-                    var address = ((IPEndPoint)client.Client.RemoteEndPoint!).Address.ToString();
-                    Paired?.Invoke(secrets.Value, address, fromRelay);
-                    RaiseChanged(force: true);
+                    secrets = await PairingHandshake.TryHostAsync(prefixed, () =>
+                    {
+                        var code = ClaimCode();
+                        claimed = code != null;
+                        return code;
+                    }, _self, _cancel.Token).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
                 }
 
+                if (secrets != null)
+                {
+                    var address = ((IPEndPoint)client.Client.RemoteEndPoint!).Address.ToString();
+                    Paired?.Invoke(secrets.Value, address, fromRelay);
+                }
+                else if (claimed)
+                {
+                    PairingFailed?.Invoke();
+                }
+
+                RaiseChanged(force: true);
                 client.Dispose();
                 return;
             }
@@ -406,20 +423,9 @@ public sealed class NetworkNode : IAsyncDisposable
                     return;
                 }
 
-                var lengthBytes = new byte[2];
-                await PairingHandshake.ReadExactlyAsync(stream, lengthBytes, readLimit.Token).ConfigureAwait(false);
-                int length = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(lengthBytes);
-                if (length < 16 + 32 + 1 || length > Protocol.MaxPairingFrame)
-                {
-                    client.Dispose();
-                    return;
-                }
-
-                var body = new byte[length];
-                await PairingHandshake.ReadExactlyAsync(stream, body, readLimit.Token).ConfigureAwait(false);
                 using var decision = CancellationTokenSource.CreateLinkedTokenSource(_cancel.Token);
-                decision.CancelAfter(TimeSpan.FromSeconds(60));
-                var secrets = await PairingHandshake.TryHostQuickAsync(body, stream, approver, _self, decision.Token).ConfigureAwait(false);
+                decision.CancelAfter(TimeSpan.FromSeconds(90));
+                var secrets = await PairingHandshake.TryHostQuickAsync(prefixed, approver, _self, decision.Token).ConfigureAwait(false);
                 if (secrets != null)
                 {
                     var address = ((IPEndPoint)client.Client.RemoteEndPoint!).Address.ToString();
@@ -738,13 +744,14 @@ public sealed class NetworkNode : IAsyncDisposable
         RaiseChanged(force: true);
     }
 
-    private bool CodeIsValid(uint code)
+    private string? ClaimCode()
     {
         lock (_gate)
         {
-            if (_activeCode == null || Environment.TickCount64 > _codeExpiresAt)
-                return false;
-            return PairingHandshake.ParseCode(_activeCode) == code;
+            var code = Environment.TickCount64 <= _codeExpiresAt ? _activeCode : null;
+            _activeCode = null;
+            _codeExpiresAt = 0;
+            return code;
         }
     }
 

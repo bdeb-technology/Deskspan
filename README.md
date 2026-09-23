@@ -13,7 +13,7 @@ The link is encrypted after pairing. Mouse movement, clicks, keys, and clipboard
 - Keyboard, mouse buttons, wheel, and pointer
 - The `Ctrl + Mouse scroll click` shortcut
 - Shared clipboard text
-- A 6-digit pairing code
+- A 9-digit pairing code that works once, checked with SPAKE2 so nobody in the middle can swap keys
 
 More than two PCs, custom shortcuts, and admin controls are part of Deskspan Pro, which is not in this repository. See [deskspan.bdebtech.in](https://deskspan.bdebtech.in).
 

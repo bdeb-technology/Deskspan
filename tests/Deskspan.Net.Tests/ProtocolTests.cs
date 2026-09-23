@@ -154,42 +154,6 @@ public class ProtocolTests
     }
 
     [Fact]
-    public async Task PairingAgreesAndRejectsTheWrongCode()
-    {
-        var host = DeviceIdentity.Create("host-pc");
-        var join = DeviceIdentity.Create("join-pc");
-        using var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-
-        var joinTask = Task.Run(async () =>
-        {
-            using var client = new TcpClient();
-            await client.ConnectAsync(IPAddress.Loopback, port);
-            return await PairingHandshake.JoinAsync(client.GetStream(), "482 913", join, CancellationToken.None);
-        });
-        using (var server = await listener.AcceptTcpClientAsync())
-        {
-            var hosted = await PairingHandshake.HostAsync(server.GetStream(), "482913", host, CancellationToken.None);
-            var joined = await joinTask;
-            Assert.Equal(hosted.Keys.TcpKey, joined.Keys.TcpKey);
-            Assert.Equal(host.Id, joined.PeerId);
-            Assert.Equal(join.Id, hosted.PeerId);
-        }
-
-        var badJoin = Task.Run(async () =>
-        {
-            using var client = new TcpClient();
-            await client.ConnectAsync(IPAddress.Loopback, port);
-            await PairingHandshake.JoinAsync(client.GetStream(), "000000", join, CancellationToken.None);
-        });
-        using var rejected = await listener.AcceptTcpClientAsync();
-        await Assert.ThrowsAsync<InvalidOperationException>(() => PairingHandshake.HostAsync(rejected.GetStream(), "482913", host, CancellationToken.None));
-        await Assert.ThrowsAnyAsync<Exception>(async () => await badJoin);
-        listener.Stop();
-    }
-
-    [Fact]
     public async Task LiveLinkDeliversKeysAndClosesWhenThePeerLeaves()
     {
         var key = new byte[32];

@@ -25,6 +25,7 @@ public sealed class AppSnapshot
     public ControlShare ControlShare { get; init; } = ControlShare.Both;
     public IReadOnlyList<NearbyComputer> NearbyComputers { get; init; } = [];
     public string? QuickRequestName { get; init; }
+    public string? QuickRequestVerify { get; init; }
 }
 
 public sealed record NearbyComputer(Guid Id, string Name);
@@ -42,7 +43,7 @@ public sealed class ShareController : IDisposable
     private readonly HashSet<byte> _buttons = new();
     private Hotkey _hotkey;
     private ControlShare _share = ControlShare.Both;
-    private (string Name, TaskCompletionSource<bool> Decision)? _pendingQuick;
+    private (string Name, string Verify, TaskCompletionSource<bool> Decision)? _pendingQuick;
     private StoredPeer? _peer;
     private ShareMode _mode = ShareMode.Idle;
     private string _detail = "Create a code, or enter one from the other computer.";
@@ -74,6 +75,7 @@ public sealed class ShareController : IDisposable
         _hub.WheelMoved += OnWheel;
         _hub.KeyReceived += OnKey;
         _node.Paired += OnPaired;
+        _node.PairingFailed += OnPairingFailed;
         _node.QuickConnectApprover = ApproveQuickAsync;
         var saved = Peer();
         if (saved != null && saved.Relay && saved.Dial == false && !string.IsNullOrWhiteSpace(saved.RelayCode))
@@ -129,7 +131,8 @@ public sealed class ShareController : IDisposable
                 DeviceId = _identity.Id.ToString("D"),
                 ControlShare = _share,
                 NearbyComputers = others,
-                QuickRequestName = _pendingQuick?.Name
+                QuickRequestName = _pendingQuick?.Name,
+                QuickRequestVerify = _pendingQuick?.Verify
             };
         }
     }
@@ -168,7 +171,13 @@ public sealed class ShareController : IDisposable
         try
         {
             using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(65));
-            var secrets = await _node.PairQuickAsync(new IPEndPoint(peer.Address, peer.TcpPort), limit.Token).ConfigureAwait(false);
+            var peerName = string.IsNullOrWhiteSpace(peer.Name) ? "the other computer" : peer.Name;
+            var secrets = await _node.PairQuickAsync(new IPEndPoint(peer.Address, peer.TcpPort), verify =>
+            {
+                lock (_gate)
+                    _detail = "Check that " + peerName + " shows " + verify + ", then allow it there.";
+                Post(RaiseChanged);
+            }, limit.Token).ConfigureAwait(false);
             SavePeer(secrets, peer.Address.ToString(), true, peer.TcpPort);
             lock (_gate)
             {
@@ -198,7 +207,7 @@ public sealed class ShareController : IDisposable
 
     public void RespondToQuickConnect(bool allow)
     {
-        (string Name, TaskCompletionSource<bool> Decision)? pending;
+        (string Name, string Verify, TaskCompletionSource<bool> Decision)? pending;
         lock (_gate)
         {
             pending = _pendingQuick;
@@ -212,11 +221,11 @@ public sealed class ShareController : IDisposable
     private Task<bool> ApproveQuickAsync(QuickConnectRequest request)
     {
         var decision = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        (string Name, TaskCompletionSource<bool> Decision)? previous;
+        (string Name, string Verify, TaskCompletionSource<bool> Decision)? previous;
         lock (_gate)
         {
             previous = _pendingQuick;
-            _pendingQuick = (string.IsNullOrWhiteSpace(request.PeerName) ? "A computer" : request.PeerName, decision);
+            _pendingQuick = (string.IsNullOrWhiteSpace(request.PeerName) ? "A computer" : request.PeerName, request.VerifyCode, decision);
         }
 
         previous?.Decision.TrySetResult(false);
@@ -269,7 +278,7 @@ public sealed class ShareController : IDisposable
 
     public void CreatePairCode()
     {
-        var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+        var code = PairingHandshake.NewCode();
         _node.SetPairCode(code);
         lock (_gate)
         {
@@ -278,15 +287,37 @@ public sealed class ShareController : IDisposable
         }
 
         BeginPublish(code);
-        BeginRelay(code);
+        BeginRelay(PairingHandshake.RoutingPart(code));
         RaiseChanged();
+    }
+
+    private void OnPairingFailed()
+    {
+        EndPublish();
+        RestoreRelay();
+        lock (_gate)
+        {
+            _pairError = "Someone typed a wrong code, so it was cancelled. Create a new code.";
+            _detail = "Create a code, or enter one from the other computer.";
+        }
+
+        Post(RaiseChanged);
+    }
+
+    private void RestoreRelay()
+    {
+        var saved = Peer();
+        if (saved != null && saved.Relay && saved.Dial == false && !string.IsNullOrWhiteSpace(saved.RelayCode))
+            BeginRelay(saved.RelayCode);
+        else
+            EndRelay();
     }
 
     public void CancelPairCode()
     {
         _node.SetPairCode(null);
         EndPublish();
-        EndRelay();
+        RestoreRelay();
         lock (_gate)
             _detail = "Create a code, or enter one from the other computer.";
         RaiseChanged();
@@ -296,7 +327,8 @@ public sealed class ShareController : IDisposable
     {
         try
         {
-            PairingHandshake.ParseCode(code);
+            code = PairingHandshake.NormalizeCode(code);
+            var digits = code[..PairingHandshake.RoutingDigits];
             lock (_gate)
             {
                 _pairError = null;
@@ -304,7 +336,6 @@ public sealed class ShareController : IDisposable
             }
 
             RaiseChanged();
-            var digits = new string(code.Where(char.IsDigit).ToArray());
             var lookup = PairDirectory.FindPairAsync(ServerUrl(), digits, CancellationToken.None);
             var until = Environment.TickCount64 + 2500;
             while (Environment.TickCount64 < until && _node.Nearby().Count == 0 && !lookup.IsCompleted)
@@ -333,7 +364,7 @@ public sealed class ShareController : IDisposable
 
             if (!connected)
             {
-                var relay = await TryRelayAsync(digits).ConfigureAwait(false);
+                var relay = await TryRelayAsync(digits, code).ConfigureAwait(false);
                 connected = relay == PairTry.Connected;
                 rejected |= relay == PairTry.Rejected;
                 unreachable = relay == PairTry.Unreachable;
@@ -360,7 +391,7 @@ public sealed class ShareController : IDisposable
                 else
                 {
                     _pairError = rejected
-                        ? "That code was not accepted."
+                        ? "That code was not accepted. A code works once, so create a new one on the other computer."
                         : unreachable
                             ? "Could not reach that computer. Keep both apps open and try again."
                             : "That code was not found. Create a code on the other computer and try again.";
@@ -407,7 +438,7 @@ public sealed class ShareController : IDisposable
         }
 
         if (code != null)
-            _ = PairDirectory.WithdrawPairAsync(server, code);
+            _ = PairDirectory.WithdrawPairAsync(server, PairingHandshake.RoutingPart(code));
     }
 
     private async Task PublishLoopAsync(string code, CancellationToken token)
@@ -418,7 +449,7 @@ public sealed class ShareController : IDisposable
             {
                 if (_node.ActiveCode != code)
                     break;
-                await PairDirectory.PublishPairAsync(ServerUrl(), code, token).ConfigureAwait(false);
+                await PairDirectory.PublishPairAsync(ServerUrl(), PairingHandshake.RoutingPart(code), token).ConfigureAwait(false);
                 await Task.Delay(TimeSpan.FromSeconds(20), token).ConfigureAwait(false);
             }
         }
@@ -514,16 +545,16 @@ public sealed class ShareController : IDisposable
             : "deskspan.bdebtech.in";
     }
 
-    private async Task<PairTry> TryRelayAsync(string code)
+    private async Task<PairTry> TryRelayAsync(string routing, string code)
     {
         try
         {
             var host = RelayHost();
-            var client = await PairRelay.ConnectAsync(host, PairRelay.Port, false, code, CancellationToken.None, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
+            var client = await PairRelay.ConnectAsync(host, PairRelay.Port, false, routing, CancellationToken.None, TimeSpan.FromSeconds(20)).ConfigureAwait(false);
             try
             {
                 var secrets = await PairingHandshake.JoinAsync(client.GetStream(), code, _identity, CancellationToken.None).ConfigureAwait(false);
-                SavePeer(secrets, host, true, Protocol.SessionPort, true, code, host);
+                SavePeer(secrets, host, true, Protocol.SessionPort, true, routing, host);
                 return PairTry.Connected;
             }
             finally

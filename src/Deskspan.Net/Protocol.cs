@@ -4,8 +4,8 @@ public static class Protocol
 {
     public const byte Version = 1;
     public static ReadOnlySpan<byte> DiscoveryMagic => "DSD1"u8;
-    public static ReadOnlySpan<byte> PairMagic => "DSP1"u8;
-    public static ReadOnlySpan<byte> QuickMagic => "DSQ1"u8;
+    public static ReadOnlySpan<byte> PairMagic => "DSP2"u8;
+    public static ReadOnlySpan<byte> QuickMagic => "DSQ2"u8;
     public static ReadOnlySpan<byte> SessionMagic => "DSSE"u8;
     public const int DiscoveryPort = 47841;
     public const int SessionPort = 47842;

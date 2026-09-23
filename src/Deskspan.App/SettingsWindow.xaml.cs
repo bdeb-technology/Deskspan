@@ -41,7 +41,7 @@ public partial class SettingsWindow : Window
         var showingCode = snapshot.PairCode != null;
         CodePanel.Visibility = showingCode ? Visibility.Visible : Visibility.Collapsed;
         CreateCodeButton.Visibility = showingCode ? Visibility.Collapsed : Visibility.Visible;
-        CodeText.Text = showingCode ? snapshot.PairCode![..3] + "  " + snapshot.PairCode[3..] : "";
+        CodeText.Text = showingCode ? PairingHandshake.FormatCode(snapshot.PairCode!) : "";
         var paired = snapshot.PeerName != null;
         PairedCard.Visibility = paired ? Visibility.Visible : Visibility.Collapsed;
         ShareCard.Visibility = paired && !showingCode ? Visibility.Collapsed : Visibility.Visible;
@@ -72,7 +72,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        QuickRequestText.Text = snapshot.QuickRequestName + " wants to use this computer's keyboard and mouse.";
+        QuickRequestText.Text = snapshot.QuickRequestName + " wants to use this computer's keyboard and mouse. Allow only if it shows " + snapshot.QuickRequestVerify + ".";
         QuickRequestCard.Visibility = Visibility.Visible;
     }
 

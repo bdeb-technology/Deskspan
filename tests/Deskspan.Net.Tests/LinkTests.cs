@@ -52,8 +52,8 @@ public class LinkTests
             host.Start();
             joiner.Start();
             Assert.True(host.SessionPort > 0);
-            host.SetPairCode("482913");
-            await joiner.PairAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), "482913", CancellationToken.None);
+            host.SetPairCode("482913705");
+            await joiner.PairAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), "482913705", CancellationToken.None);
             hostPeer = Peer(joinId, "127.0.0.1", joiner.SessionPort, dial: false);
             joinPeer = Peer(hostId, "127.0.0.1", host.SessionPort, dial: true);
 
@@ -115,7 +115,7 @@ public class LinkTests
         {
             host.Start();
             joiner.Start();
-            var secrets = await joiner.PairQuickAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), CancellationToken.None);
+            var secrets = await joiner.PairQuickAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), null, CancellationToken.None);
             joinPeer = Peer(hostId, "127.0.0.1", host.SessionPort, dial: true);
             joinPeer = new StoredPeer
             {
@@ -151,8 +151,8 @@ public class LinkTests
         {
             host.Start();
             joiner.Start();
-            await Assert.ThrowsAsync<InvalidOperationException>(() =>
-                joiner.PairQuickAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), CancellationToken.None));
+            await Assert.ThrowsAsync<PairingException>(() =>
+                joiner.PairQuickAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), null, CancellationToken.None));
             Assert.False(host.IsLinked);
         }
         finally
@@ -179,8 +179,8 @@ public class LinkTests
         {
             host.Start();
             joiner.Start();
-            host.SetPairCode("246810");
-            await joiner.PairAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), "246810", CancellationToken.None);
+            host.SetPairCode("246810357");
+            await joiner.PairAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), "246810357", CancellationToken.None);
             hostPeer = Peer(joinId, "127.0.0.1", joiner.SessionPort, dial: false);
             joinPeer = Peer(hostId, "127.0.0.1", host.SessionPort, dial: true);
             var linked = await WaitAsync(() => host.IsLinked && joiner.IsLinked, TimeSpan.FromSeconds(8));
@@ -210,9 +210,13 @@ public class LinkTests
         {
             host.Start();
             joiner.Start();
-            host.SetPairCode("111111");
+            var failed = false;
+            host.PairingFailed += () => failed = true;
+            host.SetPairCode("111111111");
             await Assert.ThrowsAnyAsync<Exception>(() =>
-                joiner.PairAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), "222222", CancellationToken.None));
+                joiner.PairAsync(new IPEndPoint(IPAddress.Loopback, host.SessionPort), "111111222", CancellationToken.None));
+            Assert.True(await WaitAsync(() => failed, TimeSpan.FromSeconds(3)));
+            Assert.Null(host.ActiveCode);
             Assert.False(host.IsLinked);
         }
         finally
