@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window x:Class="Deskspan.IndicatorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Focusable="False"
+        ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight"
+        Opacity="0"
+        FontFamily="Segoe UI">
+  <Border x:Name="Bar" Background="#CC1E293B" CornerRadius="16" Padding="14,6">
+    <TextBlock x:Name="Label" Foreground="White" FontSize="12.5"/>
+  </Border>
+</Window>

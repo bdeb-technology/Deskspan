@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Company>bdeb-technology</Company>
+    <Product>Deskspan</Product>
+    <Version>0.0.1</Version>
+    <Copyright>Copyright (c) 2026 bdeb-technology</Copyright>
+  </PropertyGroup>
+</Project>

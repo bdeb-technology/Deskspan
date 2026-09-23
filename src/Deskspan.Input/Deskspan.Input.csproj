@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>Deskspan.Input</RootNamespace>
+    <AssemblyName>Deskspan.Input</AssemblyName>
+    <PlatformTarget>x64</PlatformTarget>
+    <SupportedOSPlatformVersion>7.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Deskspan.Net\Deskspan.Net.csproj" />
+  </ItemGroup>
+</Project>
