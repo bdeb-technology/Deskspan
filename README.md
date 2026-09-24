@@ -1,6 +1,4 @@
-# Deskspan
-
-One to Multi PC Keyboard Mouse Control.
+# Deskspan - One to Multi PC Keyboard Mouse Control
 
 Deskspan shares one keyboard and mouse between two Windows PCs. Hold Ctrl and click the mouse wheel to move control to the other PC. Do it again to come back.
 
