@@ -34,7 +34,7 @@ internal struct RawKeyboard
     [FieldOffset(16)] public nuint ExtraInformation;
 }
 
-public readonly record struct RawPointerEvent(int DeltaX, int DeltaY, bool HasMove, ushort ButtonFlags, ushort ButtonData, uint ExtraInformation);
+public readonly record struct RawPointerEvent(int DeltaX, int DeltaY, bool HasMove, ushort ButtonFlags, ushort ButtonData, uint ExtraInformation, bool Absolute = false, bool VirtualDesktop = false);
 
 public readonly record struct RawKeyEvent(ushort VirtualKey, ushort ScanCode, bool IsUp, bool Extended, uint ExtraInformation);
 
@@ -54,8 +54,8 @@ public static class RawInputParser
         var x = BitConverter.ToInt32(data[12..]);
         var y = BitConverter.ToInt32(data[16..]);
         var extra = BitConverter.ToUInt32(data[20..]);
-        var relative = (flags & 1) == 0;
-        pointer = new RawPointerEvent(x, y, relative && (x != 0 || y != 0), buttons, buttonData, extra);
+        var absolute = (flags & 1) != 0;
+        pointer = new RawPointerEvent(x, y, !absolute && (x != 0 || y != 0), buttons, buttonData, extra, absolute, (flags & 2) != 0);
         return true;
     }
 

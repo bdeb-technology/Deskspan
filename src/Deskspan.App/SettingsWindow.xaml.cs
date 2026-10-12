@@ -46,6 +46,7 @@ public partial class SettingsWindow : Window
         PairedCard.Visibility = paired ? Visibility.Visible : Visibility.Collapsed;
         ShareCard.Visibility = paired && !showingCode ? Visibility.Collapsed : Visibility.Visible;
         EnterCodeCard.Visibility = paired ? Visibility.Collapsed : Visibility.Visible;
+        ApplyAutoConnect(snapshot, paired && !showingCode);
         PeerText.Text = snapshot.PeerName == null ? "" : "Paired with " + snapshot.PeerName;
         PairErrorText.Text = snapshot.PairError ?? "";
         HotkeyNote.Text = snapshot.HotkeyNote;
@@ -63,6 +64,28 @@ public partial class SettingsWindow : Window
     }
 
     private void NameBox_LostFocus(object sender, RoutedEventArgs e) => _controller.SetName(NameBox.Text);
+
+    private void ApplyAutoConnect(AppSnapshot snapshot, bool show)
+    {
+        AutoConnectCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        if (!show)
+            return;
+        var on = snapshot.AutoConnectUntil is { } until && until > DateTimeOffset.Now;
+        AutoConnectButton.Content = on
+            ? "On, reconnects until " + snapshot.AutoConnectUntil!.Value.ToLocalTime().ToString("h:mm tt")
+            : "Keep connected for 24 hours";
+        AutoConnectNote.Text = on
+            ? "Deskspan reconnects to this PC on its own after sleep or a dropped connection. Tap to turn off."
+            : "Reconnect automatically through sleep and short internet drops for the next 24 hours.";
+        PaintShare(AutoConnectButton, on);
+    }
+
+    private void AutoConnect_Click(object sender, RoutedEventArgs e)
+    {
+        var snapshot = _controller.Snapshot();
+        var on = snapshot.AutoConnectUntil is { } until && until > DateTimeOffset.Now;
+        _controller.SetAutoConnect(!on);
+    }
 
     private void ApplyQuickRequest(AppSnapshot snapshot)
     {
@@ -179,8 +202,11 @@ public partial class SettingsWindow : Window
     private void ProLink_Click(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo(PairDirectory.ProPage) { UseShellExecute = true });
 
+    private long _ignoreClipboardUntil;
+
     private void ApplyRemoteClipboard(string text)
     {
+        _ignoreClipboardUntil = Environment.TickCount64 + 400;
         try
         {
             System.Windows.Clipboard.SetText(text);
@@ -218,6 +244,8 @@ public partial class SettingsWindow : Window
     {
         if (msg == WmClipboardUpdate)
         {
+            if (Environment.TickCount64 < _ignoreClipboardUntil)
+                return IntPtr.Zero;
             try
             {
                 if (System.Windows.Clipboard.ContainsText())

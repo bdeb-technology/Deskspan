@@ -3,12 +3,19 @@ namespace Deskspan.Net;
 public sealed class InputSequencer
 {
     private const int MaxWaiting = 512;
+    private static readonly long GapWait = (long)TimeSpan.FromMilliseconds(150).TotalMilliseconds;
     private readonly object _gate = new();
     private readonly SortedDictionary<uint, NetMessage> _waiting = new();
     private readonly Action<NetMessage> _deliver;
+    private readonly Func<long> _now;
     private uint _next = 1;
+    private long _gapSince;
 
-    public InputSequencer(Action<NetMessage> deliver) => _deliver = deliver;
+    public InputSequencer(Action<NetMessage> deliver, Func<long>? now = null)
+    {
+        _deliver = deliver;
+        _now = now ?? (() => Environment.TickCount64);
+    }
 
     public void Reset()
     {
@@ -16,6 +23,7 @@ public sealed class InputSequencer
         {
             _waiting.Clear();
             _next = 1;
+            _gapSince = 0;
         }
     }
 
@@ -23,11 +31,26 @@ public sealed class InputSequencer
     {
         lock (_gate)
         {
-            if (id < _next || _waiting.ContainsKey(id))
-                return;
-            _waiting[id] = message;
-            if (_waiting.Count > MaxWaiting)
-                _next = _waiting.Keys.First();
+            if (id >= _next && !_waiting.ContainsKey(id))
+                _waiting[id] = message;
+            while (_waiting.Count > MaxWaiting)
+                _waiting.Remove(_waiting.Keys.Last());
+            if (_waiting.Count > 0 && !_waiting.ContainsKey(_next))
+            {
+                var now = _now();
+                if (_gapSince == 0)
+                    _gapSince = now;
+                else if (now - _gapSince >= GapWait)
+                {
+                    _next = _waiting.Keys.First();
+                    _gapSince = 0;
+                }
+            }
+            else
+            {
+                _gapSince = 0;
+            }
+
             while (_waiting.Remove(_next, out var ready))
             {
                 _next++;

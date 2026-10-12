@@ -121,9 +121,15 @@ public static class InputInjector
         }
     };
 
+    private static readonly NativeMethods.INPUT[] One = new NativeMethods.INPUT[1];
+    private static readonly object SendGate = new();
+
     private static void Send(NativeMethods.INPUT input)
     {
-        var sent = NativeMethods.SendInput(1, [input], System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
-        _ = sent;
+        lock (SendGate)
+        {
+            One[0] = input;
+            _ = NativeMethods.SendInput(1, One, System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.INPUT>());
+        }
     }
 }

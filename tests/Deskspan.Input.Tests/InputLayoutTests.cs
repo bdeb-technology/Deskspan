@@ -22,8 +22,18 @@ public class InputLayoutTests
         WriteInt(raw, RawInputParser.HeaderSize + 16, -3);
         Assert.True(RawInputParser.TryParseMouse(raw, out var pointer));
         Assert.True(pointer.HasMove);
+        Assert.False(pointer.Absolute);
         Assert.Equal(7, pointer.DeltaX);
         Assert.Equal(-3, pointer.DeltaY);
+
+        raw[RawInputParser.HeaderSize] = 1;
+        Assert.True(RawInputParser.TryParseMouse(raw, out pointer));
+        Assert.False(pointer.HasMove);
+        Assert.True(pointer.Absolute);
+        Assert.False(pointer.VirtualDesktop);
+        raw[RawInputParser.HeaderSize] = 3;
+        Assert.True(RawInputParser.TryParseMouse(raw, out pointer));
+        Assert.True(pointer.VirtualDesktop);
     }
 
     [Fact]

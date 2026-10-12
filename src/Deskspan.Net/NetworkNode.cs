@@ -37,6 +37,11 @@ public sealed class NetworkNode : IAsyncDisposable
     private string? _activeCode;
     private long _codeExpiresAt;
     private long _lastChangeTick;
+    private byte[]? _remoteId;
+    private readonly byte[] _fastPacket = new byte[512];
+    private readonly object _fastGate = new();
+    private IPEndPoint[]? _broadcastTargets;
+    private long _broadcastTargetsAt;
 
     public NetworkNode(DeviceIdentity self, Func<StoredPeer?> peer, Func<NetMessage.Hello> hello)
         : this(self, peer, hello, Protocol.SessionPort, Protocol.DiscoveryPort, Protocol.MousePort)
@@ -191,7 +196,17 @@ public sealed class NetworkNode : IAsyncDisposable
             box = _mouseSeal;
         if (box == null || _mouse == null)
             return;
-        SendFast(MouseDatagram.Seal(box, _self.IdBytes, sequence, x, y), direct);
+        Span<byte> plain = stackalloc byte[9];
+        plain[0] = MouseDatagram.MoveKind;
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(plain[1..], sequence);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(plain[5..], x);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(plain[7..], y);
+        lock (_fastGate)
+        {
+            var length = MouseDatagram.Write(box, _self.IdBytes, plain, _fastPacket);
+            if (length > 0)
+                SendFast(_fastPacket.AsSpan(0, length), direct);
+        }
     }
 
     public Task SendInputAsync(NetMessage message)
@@ -208,11 +223,27 @@ public sealed class NetworkNode : IAsyncDisposable
 
         var stamped = NetMessage.WithInputId(message, id) ?? message;
         if (box != null && _mouse != null)
-            SendFast(MouseDatagram.SealInput(box, _self.IdBytes, stamped), DirectMousePath);
+        {
+            var body = stamped.Encode();
+            if (body.Length + 1 <= 400)
+            {
+                var plain = new byte[1 + body.Length];
+                plain[0] = MouseDatagram.InputKind;
+                body.CopyTo(plain, 1);
+                var direct = DirectMousePath;
+                lock (_fastGate)
+                {
+                    var length = MouseDatagram.Write(box, _self.IdBytes, plain, _fastPacket);
+                    if (length > 0)
+                        SendFast(_fastPacket.AsSpan(0, length), direct);
+                }
+            }
+        }
+
         return SendAsync(stamped);
     }
 
-    private void SendFast(byte[] packet, bool direct)
+    private void SendFast(ReadOnlySpan<byte> packet, bool direct)
     {
         IPEndPoint? endpoint;
         IPEndPoint? punched;
@@ -259,7 +290,7 @@ public sealed class NetworkNode : IAsyncDisposable
         }
     }
 
-    private void SendDatagram(byte[] packet, IPEndPoint target)
+    private void SendDatagram(ReadOnlySpan<byte> packet, IPEndPoint target)
     {
         try
         {
@@ -349,6 +380,32 @@ public sealed class NetworkNode : IAsyncDisposable
     }
 
     public void ForgetLink() => _ = DropLinkAsync(null);
+
+    public void NudgeDiscovery()
+    {
+        lock (_fastGate)
+        {
+            _broadcastTargets = null;
+            _broadcastTargetsAt = 0;
+        }
+
+        lock (_gate)
+            _rendezvousServer = null;
+        try
+        {
+            SearchNearby();
+        }
+        catch (Exception)
+        {
+        }
+    }
+
+    public void Reconnect()
+    {
+        NudgeDiscovery();
+        if (IsLinked)
+            _ = DropLinkAsync(null);
+    }
 
     private async Task AcceptLoopAsync()
     {
@@ -604,6 +661,7 @@ public sealed class NetworkNode : IAsyncDisposable
                 _mouseOpen?.Dispose();
                 _mouseSeal = new AeadBox(keys.UdpKey, "DSUDP");
                 _mouseOpen = new AeadBox(keys.UdpKey, "DSUDP");
+                _remoteId = peer.Id.ToByteArray();
                 _latestMouseSequence = 0;
                 _inputId = 0;
                 _inputs.Reset();
@@ -735,6 +793,7 @@ public sealed class NetworkNode : IAsyncDisposable
             _mouseOpen?.Dispose();
             _mouseSeal = null;
             _mouseOpen = null;
+            _remoteId = null;
         }
 
         if (link != null)
@@ -820,7 +879,35 @@ public sealed class NetworkNode : IAsyncDisposable
     {
         if (_discovery == null)
             return;
-        var targets = new List<IPAddress> { IPAddress.Broadcast };
+        var now = Environment.TickCount64;
+        IPEndPoint[] targets;
+        lock (_fastGate)
+            targets = _broadcastTargets != null && now - _broadcastTargetsAt <= 30_000 ? _broadcastTargets : [];
+        if (targets.Length == 0)
+        {
+            targets = BuildBroadcastTargets();
+            lock (_fastGate)
+            {
+                _broadcastTargets = targets;
+                _broadcastTargetsAt = now;
+            }
+        }
+
+        foreach (var target in targets)
+        {
+            try
+            {
+                _discovery.SendTo(packet, target);
+            }
+            catch (SocketException)
+            {
+            }
+        }
+    }
+
+    private static IPEndPoint[] BuildBroadcastTargets()
+    {
+        var targets = new List<IPEndPoint> { new(IPAddress.Broadcast, Protocol.DiscoveryPort) };
         foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
         {
             if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
@@ -834,20 +921,11 @@ public sealed class NetworkNode : IAsyncDisposable
                 var broadcast = new byte[4];
                 for (var i = 0; i < 4; i++)
                     broadcast[i] = (byte)(address[i] | ~mask[i]);
-                targets.Add(new IPAddress(broadcast));
+                targets.Add(new IPEndPoint(new IPAddress(broadcast), Protocol.DiscoveryPort));
             }
         }
 
-        foreach (var target in targets.Distinct())
-        {
-            try
-            {
-                _discovery.SendTo(packet, new IPEndPoint(target, Protocol.DiscoveryPort));
-            }
-            catch (SocketException)
-            {
-            }
-        }
+        return targets.Distinct().ToArray();
     }
 
     private void MouseLoop()
@@ -861,46 +939,67 @@ public sealed class NetworkNode : IAsyncDisposable
             {
                 EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
                 int read = _mouse.ReceiveFrom(buffer, ref remote);
-                var packet = buffer.AsSpan(0, read);
-                if (remote is IPEndPoint from && HandleRendezvous(packet, from))
-                    continue;
-
-                StoredPeer? peer = _peer();
-                AeadBox? box;
-                uint latest;
-                lock (_gate)
+                var pending = false;
+                uint moveSequence = 0;
+                ushort moveX = 0;
+                ushort moveY = 0;
+                NotePacket(buffer.AsSpan(0, read), remote, ref pending, ref moveSequence, ref moveX, ref moveY);
+                for (var extra = 0; extra < 63 && _mouse.Available > 0; extra++)
                 {
-                    box = _mouseOpen;
-                    latest = _latestMouseSequence;
+                    remote = new IPEndPoint(IPAddress.Any, 0);
+                    read = _mouse.ReceiveFrom(buffer, ref remote);
+                    NotePacket(buffer.AsSpan(0, read), remote, ref pending, ref moveSequence, ref moveX, ref moveY);
                 }
 
-                if (peer == null || box == null)
-                    continue;
-                if (!MouseDatagram.TryOpenAny(box, packet, peer.Id.ToByteArray(), out var plain))
-                    continue;
-                if (remote is IPEndPoint sender)
-                    NoteDirectMouse(sender);
-                if (plain[0] == MouseDatagram.InputKind)
-                {
-                    OfferInput(plain.AsSpan(1));
-                    continue;
-                }
-
-                if (plain.Length != 9 || plain[0] != MouseDatagram.MoveKind)
-                    continue;
-                var sequence = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(1));
-                if (!Sequence.IsNewer(sequence, latest))
-                    continue;
-                PublishMouse(
-                    sequence,
-                    System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(plain.AsSpan(5)),
-                    System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(plain.AsSpan(7)));
+                if (pending)
+                    PublishMouse(moveSequence, moveX, moveY);
             }
             catch (Exception) when (!_cancel.IsCancellationRequested)
             {
                 Thread.Sleep(50);
             }
         }
+    }
+
+    private void NotePacket(ReadOnlySpan<byte> packet, EndPoint remote, ref bool pending, ref uint moveSequence, ref ushort moveX, ref ushort moveY)
+    {
+        if (remote is IPEndPoint from && HandleRendezvous(packet, from))
+            return;
+        AeadBox? box;
+        byte[]? peerId;
+        uint latest;
+        lock (_gate)
+        {
+            box = _mouseOpen;
+            peerId = _remoteId;
+            latest = pending ? moveSequence : _latestMouseSequence;
+        }
+
+        if (box == null || peerId == null || !MouseDatagram.TryOpenAny(box, packet, peerId, out var plain))
+            return;
+        if (remote is IPEndPoint sender)
+            NoteDirectMouse(sender);
+        if (plain[0] == MouseDatagram.InputKind)
+        {
+            if (pending)
+            {
+                PublishMouse(moveSequence, moveX, moveY);
+                pending = false;
+            }
+
+            OfferInput(plain.AsSpan(1));
+            return;
+        }
+
+        if (plain.Length != 9 || plain[0] != MouseDatagram.MoveKind)
+            return;
+        var sequence = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan(1));
+        if (!Sequence.IsNewer(sequence, latest))
+            return;
+        pending = true;
+        moveSequence = sequence;
+        moveX = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(plain.AsSpan(5));
+        moveY = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(plain.AsSpan(7));
     }
 
     private void OfferInput(ReadOnlySpan<byte> body)

@@ -15,6 +15,7 @@ public sealed class LiveLink : IAsyncDisposable
     private readonly object _moveGate = new();
     private readonly TaskCompletionSource<NetMessage.Hello> _hello = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private NetMessage.PointerMove? _pendingMove;
+    private int _heartbeatQueued;
     private long _lastReceive;
     private int _closed;
 
@@ -60,6 +61,11 @@ public sealed class LiveLink : IAsyncDisposable
                     _pendingMove = move;
             }
         }
+        else if (message is NetMessage.Heartbeat)
+        {
+            if (Interlocked.Exchange(ref _heartbeatQueued, 1) == 0 && !_reliable.Writer.TryWrite(message))
+                Interlocked.Exchange(ref _heartbeatQueued, 0);
+        }
         else
         {
             _reliable.Writer.TryWrite(message);
@@ -92,7 +98,11 @@ public sealed class LiveLink : IAsyncDisposable
                 await _signal.WaitAsync(cancellationToken).ConfigureAwait(false);
 
                 while (_reliable.Reader.TryRead(out var reliable))
+                {
+                    if (reliable is NetMessage.Heartbeat)
+                        Interlocked.Exchange(ref _heartbeatQueued, 0);
                     await _stream.SendAsync(reliable, cancellationToken).ConfigureAwait(false);
+                }
 
                 NetMessage.PointerMove? move;
                 lock (_moveGate)

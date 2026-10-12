@@ -17,13 +17,22 @@ public sealed class AeadBox : IDisposable
     public byte[] Seal(ReadOnlySpan<byte> plaintext)
     {
         var packet = new byte[12 + plaintext.Length + 16];
-        var nonce = packet.AsSpan(0, 12);
-        var cipher = packet.AsSpan(12, plaintext.Length);
-        var tag = packet.AsSpan(12 + plaintext.Length, 16);
+        SealInto(plaintext, packet);
+        return packet;
+    }
+
+    public int SealInto(ReadOnlySpan<byte> plaintext, Span<byte> destination)
+    {
+        var needed = 12 + plaintext.Length + 16;
+        if (destination.Length < needed)
+            throw new ArgumentException("Destination is too small.", nameof(destination));
+        var nonce = destination[..12];
+        var cipher = destination.Slice(12, plaintext.Length);
+        var tag = destination.Slice(12 + plaintext.Length, 16);
         RandomNumberGenerator.Fill(nonce);
         lock (_gate)
             _aead.Encrypt(nonce, plaintext, cipher, tag, _associated);
-        return packet;
+        return needed;
     }
 
     public byte[] Open(ReadOnlySpan<byte> packet)

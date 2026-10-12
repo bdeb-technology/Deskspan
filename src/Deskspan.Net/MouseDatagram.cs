@@ -9,12 +9,20 @@ public static class MouseDatagram
 
     public static byte[] Seal(AeadBox box, byte[] senderId, uint sequence, ushort x, ushort y)
     {
-        var plain = new byte[9];
+        Span<byte> plain = stackalloc byte[9];
         plain[0] = MoveKind;
-        BinaryPrimitives.WriteUInt32LittleEndian(plain.AsSpan(1), sequence);
-        BinaryPrimitives.WriteUInt16LittleEndian(plain.AsSpan(5), x);
-        BinaryPrimitives.WriteUInt16LittleEndian(plain.AsSpan(7), y);
+        BinaryPrimitives.WriteUInt32LittleEndian(plain[1..], sequence);
+        BinaryPrimitives.WriteUInt16LittleEndian(plain[5..], x);
+        BinaryPrimitives.WriteUInt16LittleEndian(plain[7..], y);
         return Frame(box, senderId, plain);
+    }
+
+    public static int Write(AeadBox box, ReadOnlySpan<byte> senderId, ReadOnlySpan<byte> plain, Span<byte> destination)
+    {
+        if (senderId.Length < 16 || destination.Length < 16 + 12 + plain.Length + 16)
+            return 0;
+        senderId[..16].CopyTo(destination);
+        return 16 + box.SealInto(plain, destination[16..]);
     }
 
     public static byte[] SealInput(AeadBox box, byte[] senderId, NetMessage message)
@@ -58,12 +66,10 @@ public static class MouseDatagram
         return plain.Length > 0;
     }
 
-    private static byte[] Frame(AeadBox box, byte[] senderId, byte[] plain)
+    private static byte[] Frame(AeadBox box, ReadOnlySpan<byte> senderId, ReadOnlySpan<byte> plain)
     {
-        var cipher = box.Seal(plain);
-        var packet = new byte[16 + cipher.Length];
-        senderId.AsSpan(0, 16).CopyTo(packet);
-        cipher.CopyTo(packet.AsSpan(16));
-        return packet;
+        var packet = new byte[16 + 12 + plain.Length + 16];
+        var length = Write(box, senderId, plain, packet);
+        return length == packet.Length ? packet : packet[..length];
     }
 }

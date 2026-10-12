@@ -26,6 +26,7 @@ public sealed class AppSnapshot
     public IReadOnlyList<NearbyComputer> NearbyComputers { get; init; } = [];
     public string? QuickRequestName { get; init; }
     public string? QuickRequestVerify { get; init; }
+    public DateTimeOffset? AutoConnectUntil { get; init; }
 }
 
 public sealed record NearbyComputer(Guid Id, string Name);
@@ -58,6 +59,7 @@ public sealed class ShareController : IDisposable
     private int _cursorY;
     private int _sequence;
     private int _disposed;
+    private DateTimeOffset? _autoConnectUntil;
 
     public ShareController()
     {
@@ -66,6 +68,7 @@ public sealed class ShareController : IDisposable
         _identity = profile.Identity;
         _share = profile.ControlShare;
         _peer = profile.Peer;
+        _autoConnectUntil = profile.AutoConnectUntil;
         _hotkey = Hotkey.Default;
         _hub = new InputHub { Hotkey = _hotkey };
         _node = new NetworkNode(_identity, Peer, Hello);
@@ -100,6 +103,8 @@ public sealed class ShareController : IDisposable
         _node.Start();
         if (!string.IsNullOrWhiteSpace(_node.BindError))
             _detail = "Close any other Deskspan, then open this one again.";
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         RaiseChanged();
     }
 
@@ -132,8 +137,47 @@ public sealed class ShareController : IDisposable
                 ControlShare = _share,
                 NearbyComputers = others,
                 QuickRequestName = _pendingQuick?.Name,
-                QuickRequestVerify = _pendingQuick?.Verify
+                QuickRequestVerify = _pendingQuick?.Verify,
+                AutoConnectUntil = _autoConnectUntil
             };
+        }
+    }
+
+    public void SetAutoConnect(bool on)
+    {
+        lock (_gate)
+        {
+            _autoConnectUntil = on ? DateTimeOffset.Now.AddHours(24) : null;
+            Save();
+        }
+
+        if (on)
+            _node.Reconnect();
+        RaiseChanged();
+    }
+
+    private bool AutoConnectActive()
+    {
+        lock (_gate)
+            return _autoConnectUntil is { } until && until > DateTimeOffset.Now;
+    }
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == Microsoft.Win32.PowerModes.Resume && AutoConnectActive())
+        {
+            ErrorLog.Note("resume: reconnecting");
+            _node.Reconnect();
+        }
+    }
+
+    private void OnNetworkAddressChanged(object? sender, EventArgs e)
+    {
+        _node.NudgeDiscovery();
+        if (AutoConnectActive())
+        {
+            ErrorLog.Note("network changed: reconnecting");
+            _node.Reconnect();
         }
     }
 
@@ -626,6 +670,8 @@ public sealed class ShareController : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
         EndPublish();
         EndRelay();
         _hub.CaptureMouse = false;
@@ -1021,15 +1067,22 @@ public sealed class ShareController : IDisposable
         Identity = _identity,
         Hotkey = Hotkey.Default,
         ControlShare = _share,
-        Peer = _peer
+        Peer = _peer,
+        AutoConnectUntil = _autoConnectUntil
     });
 
     private void Post(Action action) => _ui.Post(_ => action(), null);
 
     private void RaiseChanged() => Changed?.Invoke();
 
+    private static string _cachedAddresses = "";
+    private static long _addressesAt;
+
     private static string LocalAddresses()
     {
+        var now = Environment.TickCount64;
+        if (_cachedAddresses.Length > 0 && now - _addressesAt < 5000)
+            return _cachedAddresses;
         var addresses = new List<string>();
         foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
         {
@@ -1042,6 +1095,8 @@ public sealed class ShareController : IDisposable
             }
         }
 
-        return addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", addresses.Distinct());
+        _cachedAddresses = addresses.Count == 0 ? "No IPv4 address" : string.Join(", ", addresses.Distinct());
+        _addressesAt = now;
+        return _cachedAddresses;
     }
 }

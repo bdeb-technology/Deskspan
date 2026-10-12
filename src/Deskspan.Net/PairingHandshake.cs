@@ -125,8 +125,18 @@ public static class PairingHandshake
         }
 
         var me = Encode(self);
-        var spake = new Spake2(false, password);
-        var keys = spake.Finish(joinerShare, joiner.Encoded, me);
+        Spake2 spake;
+        Spake2Keys keys;
+        try
+        {
+            spake = new Spake2(false, password);
+            keys = spake.Finish(joinerShare, joiner.Encoded, me);
+        }
+        catch (InvalidDataException)
+        {
+            try { await WriteStatusAsync(stream, Refused, token).ConfigureAwait(false); } catch { }
+            throw;
+        }
         var reply = new byte[1 + 2 + me.Length + Spake2.ShareLength + ConfirmLength];
         reply[0] = Accepted;
         BinaryPrimitives.WriteUInt16LittleEndian(reply.AsSpan(1), (ushort)(reply.Length - 3));

@@ -11,6 +11,7 @@ internal sealed class UserProfile
     public Hotkey Hotkey { get; init; } = Hotkey.Default;
     public ControlShare ControlShare { get; init; } = ControlShare.Both;
     public StoredPeer? Peer { get; init; }
+    public DateTimeOffset? AutoConnectUntil { get; init; }
 }
 
 internal static class ProfileStore
@@ -44,7 +45,8 @@ internal static class ProfileStore
                         Identity = identity,
                         Hotkey = hotkey,
                         ControlShare = share,
-                        Peer = ToPeer(dto.Peer)
+                        Peer = ToPeer(dto.Peer),
+                        AutoConnectUntil = dto.AutoConnectUntil > 0 ? DateTimeOffset.FromUnixTimeSeconds(dto.AutoConnectUntil) : null
                     };
                 }
             }
@@ -73,6 +75,7 @@ internal static class ProfileStore
             HotkeyModifiers = (int)profile.Hotkey.Modifiers,
             HotkeyVirtualKey = profile.Hotkey.VirtualKey,
             ControlShare = (int)profile.ControlShare,
+            AutoConnectUntil = profile.AutoConnectUntil?.ToUnixTimeSeconds() ?? 0,
             Peer = peer == null ? null : new PeerDto
             {
                 Id = peer.Id,
@@ -121,6 +124,7 @@ internal static class ProfileStore
         public int HotkeyModifiers { get; set; }
         public int HotkeyVirtualKey { get; set; }
         public int ControlShare { get; set; }
+        public long AutoConnectUntil { get; set; }
         public PeerDto? Peer { get; set; }
     }
 
@@ -145,8 +149,12 @@ internal static class ErrorLog
     {
         try
         {
+            var path = Path.Combine(ProfileStore.Folder, "network.log");
             Directory.CreateDirectory(ProfileStore.Folder);
-            File.AppendAllText(Path.Combine(ProfileStore.Folder, "network.log"), DateTimeOffset.Now.ToString("s") + " " + text + Environment.NewLine);
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length > 256 * 1024)
+                File.Delete(path);
+            File.AppendAllText(path, DateTimeOffset.Now.ToString("s") + " " + text + Environment.NewLine);
         }
         catch (Exception)
         {

@@ -61,6 +61,30 @@ public class ProtocolTests
     }
 
     [Fact]
+    public void AMissingInputIsKeptUntilTheSlowerPathCanFillIt()
+    {
+        var now = 1_000L;
+        var delivered = new List<uint>();
+        var sequencer = new InputSequencer(message => delivered.Add(NetMessage.InputId(message)), () => now);
+        NetMessage Key(uint id) => new NetMessage.KeyStroke(true, 0x41, 30, false, id);
+        sequencer.Offer(1, Key(1));
+        sequencer.Offer(3, Key(3));
+        now += 100;
+        sequencer.Offer(4, Key(4));
+        Assert.Equal([1u], delivered);
+        sequencer.Offer(2, Key(2));
+        Assert.Equal([1u, 2u, 3u, 4u], delivered);
+
+        sequencer.Reset();
+        delivered.Clear();
+        now += 1000;
+        sequencer.Offer(10, Key(10));
+        now += 150;
+        sequencer.Offer(11, Key(11));
+        Assert.Equal([10u, 11u], delivered);
+    }
+
+    [Fact]
     public void InputDatagramCarriesTheEvent()
     {
         var key = RandomNumberGenerator.GetBytes(32);

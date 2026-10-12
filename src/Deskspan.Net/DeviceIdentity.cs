@@ -17,13 +17,14 @@ public sealed class DeviceIdentity
         Name = Sanitize(name);
         PublicKey = publicKey;
         PrivateKey = privateKey;
+        IdBytes = id.ToByteArray();
     }
 
     public Guid Id { get; }
     public string Name { get; set; }
     public byte[] PublicKey { get; }
     public byte[] PrivateKey { get; }
-    public byte[] IdBytes => Id.ToByteArray();
+    public byte[] IdBytes { get; }
 
     public static DeviceIdentity Create(string name)
     {

@@ -6,7 +6,7 @@
         SizeToContent="Height"
         MaxHeight="820"
         WindowStartupLocation="CenterScreen"
-        ResizeMode="NoResize"
+        ResizeMode="CanMinimize"
         Background="{StaticResource Paper}"
         Foreground="{StaticResource Ink}"
         FontFamily="Segoe UI">
@@ -74,6 +74,14 @@
           <Button x:Name="ForgetButton" Content="Unpair" Style="{StaticResource QuietButton}" DockPanel.Dock="Right" Click="Forget_Click"/>
           <TextBlock x:Name="PeerText" VerticalAlignment="Center" FontSize="14" TextWrapping="Wrap"/>
         </DockPanel>
+      </Border>
+
+      <Border x:Name="AutoConnectCard" Background="{StaticResource Card}" CornerRadius="14" Padding="14,12" Margin="0,0,0,8" Visibility="Collapsed">
+        <StackPanel>
+          <TextBlock Text="Stay connected" FontSize="12" Foreground="{StaticResource Muted}"/>
+          <Button x:Name="AutoConnectButton" Style="{StaticResource ChoiceButton}" Margin="0,8,0,0" Click="AutoConnect_Click"/>
+          <TextBlock x:Name="AutoConnectNote" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"/>
+        </StackPanel>
       </Border>
 
       <Border Background="{StaticResource Card}" CornerRadius="14" Padding="14,12" Margin="0,0,0,8">

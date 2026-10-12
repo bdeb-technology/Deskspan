@@ -32,6 +32,7 @@ public sealed class InputHub : IDisposable
     private readonly ModifierState _modifiers = new();
     private int _captureMouse;
     private int _captureKeyboard;
+    private int _rawMouse;
     private int _hotkeyEnabled = 1;
     private int _systemHotkey;
     private long _lastToggle;
@@ -44,6 +45,13 @@ public sealed class InputHub : IDisposable
     private int _drainingKeys;
     private long _duplicateTick;
     private int _duplicateId;
+    private int _seenAbsolute;
+    private int _absoluteX;
+    private int _absoluteY;
+    private int _hookPointValid;
+    private NativeMethods.POINT _hookPoint;
+    private VirtualScreen _screen;
+    private long _screenAt;
 
     public InputHub()
     {
@@ -63,7 +71,9 @@ public sealed class InputHub : IDisposable
         set
         {
             Volatile.Write(ref _captureMouse, value ? 1 : 0);
-            if (value)
+            Volatile.Write(ref _seenAbsolute, 0);
+            Volatile.Write(ref _hookPointValid, 0);
+            if (value && Volatile.Read(ref _rawMouse) == 1)
             {
                 _speed = InputInjector.PointerSpeedScale();
                 InputInjector.ClipToCurrentCursor();
@@ -146,12 +156,11 @@ public sealed class InputHub : IDisposable
             };
             NativeMethods.RegisterClass(ref windowClass);
             var hwnd = NativeMethods.CreateWindowEx(0, className, "", 0, 0, 0, 0, 0, MessageOnly, 0, instance, 0);
-            var devices = new[]
-            {
-                new NativeMethods.RAWINPUTDEVICE { UsagePage = 0x01, Usage = 0x02, Flags = InputSink, Target = hwnd },
-                new NativeMethods.RAWINPUTDEVICE { UsagePage = 0x01, Usage = 0x06, Flags = InputSink, Target = hwnd }
-            };
-            NativeMethods.RegisterRawInputDevices(devices, (uint)devices.Length, (uint)Marshal.SizeOf<NativeMethods.RAWINPUTDEVICE>());
+            var size = (uint)Marshal.SizeOf<NativeMethods.RAWINPUTDEVICE>();
+            var mouse = new[] { new NativeMethods.RAWINPUTDEVICE { UsagePage = 0x01, Usage = 0x02, Flags = InputSink, Target = hwnd } };
+            var keyboard = new[] { new NativeMethods.RAWINPUTDEVICE { UsagePage = 0x01, Usage = 0x06, Flags = InputSink, Target = hwnd } };
+            Volatile.Write(ref _rawMouse, NativeMethods.RegisterRawInputDevices(mouse, 1, size) ? 1 : 0);
+            NativeMethods.RegisterRawInputDevices(keyboard, 1, size);
             _hwnd = hwnd;
             InstallHooks(instance);
             RefreshRegisteredHotkey(hwnd);
@@ -210,10 +219,25 @@ public sealed class InputHub : IDisposable
         {
             if (!CaptureMouse || pointer.ExtraInformation == (uint)NativeMethods.Stamp)
                 return;
-            if (pointer.HasMove)
+            if (pointer.Absolute)
             {
-                var dx = (int)Math.Round(pointer.DeltaX * (_speed / 10.0));
-                var dy = (int)Math.Round(pointer.DeltaY * (_speed / 10.0));
+                if (Volatile.Read(ref _seenAbsolute) == 1)
+                {
+                    var screen = AbsoluteScreen(pointer.VirtualDesktop);
+                    var dx = Scale((int)((pointer.DeltaX - _absoluteX) * (long)Math.Max(1, screen.Width) / 65535));
+                    var dy = Scale((int)((pointer.DeltaY - _absoluteY) * (long)Math.Max(1, screen.Height) / 65535));
+                    if (dx != 0 || dy != 0)
+                        MouseDelta?.Invoke(dx, dy);
+                }
+
+                _absoluteX = pointer.DeltaX;
+                _absoluteY = pointer.DeltaY;
+                Volatile.Write(ref _seenAbsolute, 1);
+            }
+            else if (pointer.HasMove)
+            {
+                var dx = Scale(pointer.DeltaX);
+                var dy = Scale(pointer.DeltaY);
                 if (dx != 0 || dy != 0)
                     MouseDelta?.Invoke(dx, dy);
             }
@@ -348,9 +372,55 @@ public sealed class InputHub : IDisposable
             return 1;
         if (!self.CaptureMouse || injected)
             return NativeMethods.CallNextHookEx(self._mouseHook, code, wParam, lParam);
-        if (HookPolicy.Decide(true, false, false) == HookAction.Swallow)
-            return 1;
-        return NativeMethods.CallNextHookEx(self._mouseHook, code, wParam, lParam);
+        if (Volatile.Read(ref self._rawMouse) == 0)
+            self.EmitHookMouse((int)wParam, data);
+        return 1;
+    }
+
+    private int Scale(int delta) => (int)Math.Round(delta * (_speed / 10.0));
+
+    private VirtualScreen AbsoluteScreen(bool virtualDesktop)
+    {
+        if (!virtualDesktop)
+            return new VirtualScreen(0, 0, Math.Max(1, NativeMethods.GetSystemMetrics(0)), Math.Max(1, NativeMethods.GetSystemMetrics(1)));
+        var now = Environment.TickCount64;
+        if (now - _screenAt > 1000)
+        {
+            _screen = VirtualScreen.FromSystem();
+            _screenAt = now;
+        }
+
+        return _screen;
+    }
+
+    private void EmitHookMouse(int message, NativeMethods.MouseHook data)
+    {
+        if (Volatile.Read(ref _hookPointValid) == 1)
+        {
+            var dx = data.Point.X - _hookPoint.X;
+            var dy = data.Point.Y - _hookPoint.Y;
+            if (dx != 0 || dy != 0)
+                MouseDelta?.Invoke(dx, dy);
+        }
+
+        _hookPoint = data.Point;
+        Volatile.Write(ref _hookPointValid, 1);
+        var button = MouseChord.Button(message, data.MouseData, out var down);
+        var mapped = button switch
+        {
+            0x01 => (byte)0,
+            0x02 => (byte)1,
+            0x04 => (byte)2,
+            0x05 => (byte)3,
+            0x06 => (byte)4,
+            _ => byte.MaxValue
+        };
+        if (mapped != byte.MaxValue)
+            PointerButton?.Invoke(mapped, down);
+        if (message == 0x020A)
+            WheelMoved?.Invoke((short)(data.MouseData >> 16), false);
+        else if (message == 0x020E)
+            WheelMoved?.Invoke((short)(data.MouseData >> 16), true);
     }
 
     private bool Suppressed(byte button)
