@@ -69,7 +69,7 @@ public class ProtocolTests
         NetMessage Key(uint id) => new NetMessage.KeyStroke(true, 0x41, 30, false, id);
         sequencer.Offer(1, Key(1));
         sequencer.Offer(3, Key(3));
-        now += 100;
+        now += 8;
         sequencer.Offer(4, Key(4));
         Assert.Equal([1u], delivered);
         sequencer.Offer(2, Key(2));
@@ -79,7 +79,7 @@ public class ProtocolTests
         delivered.Clear();
         now += 1000;
         sequencer.Offer(10, Key(10));
-        now += 150;
+        now += 12;
         sequencer.Offer(11, Key(11));
         Assert.Equal([10u, 11u], delivered);
     }

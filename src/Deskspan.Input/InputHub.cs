@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using Deskspan.Net;
 
@@ -41,8 +40,6 @@ public sealed class InputHub : IDisposable
     private nint _hwnd;
     private bool _triggerDown;
     private int _suppressedMouseButton;
-    private readonly ConcurrentQueue<HookKey> _pendingKeys = new();
-    private int _drainingKeys;
     private long _duplicateTick;
     private int _duplicateId;
     private int _seenAbsolute;
@@ -262,25 +259,7 @@ public sealed class InputHub : IDisposable
             return;
         _duplicateId = id;
         _duplicateTick = now;
-        _pendingKeys.Enqueue(key);
-        if (Interlocked.CompareExchange(ref _drainingKeys, 1, 0) != 0)
-            return;
-        ThreadPool.QueueUserWorkItem(_ => DrainKeys());
-    }
-
-    private void DrainKeys()
-    {
-        try
-        {
-            while (_pendingKeys.TryDequeue(out var key))
-                KeyReceived?.Invoke(key.VirtualKey, key.ScanCode, key.Down, key.Extended);
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _drainingKeys, 0);
-            if (!_pendingKeys.IsEmpty && Interlocked.CompareExchange(ref _drainingKeys, 1, 0) == 0)
-                ThreadPool.QueueUserWorkItem(_ => DrainKeys());
-        }
+        KeyReceived?.Invoke(key.VirtualKey, key.ScanCode, key.Down, key.Extended);
     }
 
     private void EmitButtons(ushort flags, ushort data)
@@ -377,7 +356,11 @@ public sealed class InputHub : IDisposable
         return 1;
     }
 
-    private int Scale(int delta) => (int)Math.Round(delta * (_speed / 10.0));
+    private int Scale(int delta)
+    {
+        var scaled = delta * _speed;
+        return (scaled + (scaled >= 0 ? 5 : -5)) / 10;
+    }
 
     private VirtualScreen AbsoluteScreen(bool virtualDesktop)
     {

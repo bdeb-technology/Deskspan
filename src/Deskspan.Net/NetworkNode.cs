@@ -130,7 +130,16 @@ public sealed class NetworkNode : IAsyncDisposable
         }
 
         MousePort = ((IPEndPoint)_mouse.LocalEndPoint!).Port;
-        _ = Task.Run(MouseLoop);
+        try
+        {
+            _mouse.ReceiveBufferSize = 256 * 1024;
+            _mouse.SendBufferSize = 256 * 1024;
+        }
+        catch (SocketException)
+        {
+        }
+
+        _ = Task.Factory.StartNew(MouseLoop, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         _ = Task.Run(DialLoopAsync);
         _ = Task.Run(RendezvousLoopAsync);
         RaiseChanged(force: true);
@@ -142,6 +151,15 @@ public sealed class NetworkNode : IAsyncDisposable
         {
             lock (_gate)
                 return _peerMouse != null || Environment.TickCount64 - _directConfirmedAt < 3000;
+        }
+    }
+
+    private bool HasUdpMousePath
+    {
+        get
+        {
+            lock (_gate)
+                return _peerMouse != null || _rendezvousToken != null;
         }
     }
 
@@ -190,7 +208,7 @@ public sealed class NetworkNode : IAsyncDisposable
     public void SendMouse(uint sequence, ushort x, ushort y)
     {
         var direct = DirectMousePath;
-        if (!direct)
+        if (!HasUdpMousePath)
             _ = SendAsync(new NetMessage.PointerMove(sequence, x, y));
         AeadBox? box;
         lock (_gate)
@@ -934,6 +952,14 @@ public sealed class NetworkNode : IAsyncDisposable
     {
         if (_mouse == null)
             return;
+        try
+        {
+            Thread.CurrentThread.Priority = ThreadPriority.Highest;
+        }
+        catch (Exception)
+        {
+        }
+
         var buffer = new byte[1024];
         while (!_cancel.IsCancellationRequested)
         {
@@ -1019,6 +1045,8 @@ public sealed class NetworkNode : IAsyncDisposable
         var id = NetMessage.InputId(message);
         if (id != 0)
             _inputs.Offer(id, message);
+        else
+            Deliver(message);
     }
 
     private bool HandleRendezvous(ReadOnlySpan<byte> packet, IPEndPoint from)

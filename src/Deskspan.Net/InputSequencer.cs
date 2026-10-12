@@ -3,7 +3,7 @@ namespace Deskspan.Net;
 public sealed class InputSequencer
 {
     private const int MaxWaiting = 512;
-    private static readonly long GapWait = (long)TimeSpan.FromMilliseconds(150).TotalMilliseconds;
+    private static readonly long GapWait = (long)TimeSpan.FromMilliseconds(12).TotalMilliseconds;
     private readonly object _gate = new();
     private readonly SortedDictionary<uint, NetMessage> _waiting = new();
     private readonly Action<NetMessage> _deliver;
@@ -29,6 +29,7 @@ public sealed class InputSequencer
 
     public void Offer(uint id, NetMessage message)
     {
+        List<NetMessage>? ready = null;
         lock (_gate)
         {
             if (id >= _next && !_waiting.ContainsKey(id))
@@ -51,16 +52,23 @@ public sealed class InputSequencer
                 _gapSince = 0;
             }
 
-            while (_waiting.Remove(_next, out var ready))
+            while (_waiting.Remove(_next, out var next))
             {
                 _next++;
-                try
-                {
-                    _deliver(ready);
-                }
-                catch (Exception)
-                {
-                }
+                (ready ??= new List<NetMessage>(4)).Add(next);
+            }
+        }
+
+        if (ready == null)
+            return;
+        foreach (var item in ready)
+        {
+            try
+            {
+                _deliver(item);
+            }
+            catch (Exception)
+            {
             }
         }
     }

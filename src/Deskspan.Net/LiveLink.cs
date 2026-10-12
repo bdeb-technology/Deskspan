@@ -23,8 +23,8 @@ public sealed class LiveLink : IAsyncDisposable
     {
         _stream = stream;
         _lastReceive = Environment.TickCount64;
-        _writer = Task.Run(() => WriteLoopAsync(_cancel.Token));
-        _receive = Task.Run(() => ReceiveLoopAsync(_cancel.Token));
+        _writer = Task.Factory.StartNew(() => WriteLoopAsync(_cancel.Token), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+        _receive = Task.Factory.StartNew(() => ReceiveLoopAsync(_cancel.Token), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
         _heartbeat = Task.Run(() => HeartbeatLoopAsync(receiveTimeout, _cancel.Token));
     }
 
@@ -93,6 +93,7 @@ public sealed class LiveLink : IAsyncDisposable
     {
         try
         {
+            TryBoost();
             while (!cancellationToken.IsCancellationRequested)
             {
                 await _signal.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -128,6 +129,7 @@ public sealed class LiveLink : IAsyncDisposable
     {
         try
         {
+            TryBoost();
             while (!cancellationToken.IsCancellationRequested)
             {
                 var message = await _stream.ReceiveAsync(cancellationToken).ConfigureAwait(false);
@@ -173,6 +175,17 @@ public sealed class LiveLink : IAsyncDisposable
         catch (Exception)
         {
             SignalClosed();
+        }
+    }
+
+    private static void TryBoost()
+    {
+        try
+        {
+            Thread.CurrentThread.Priority = ThreadPriority.Highest;
+        }
+        catch (Exception)
+        {
         }
     }
 
