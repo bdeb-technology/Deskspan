@@ -37,6 +37,7 @@ public sealed class NetworkNode : IAsyncDisposable
     private string? _activeCode;
     private long _codeExpiresAt;
     private long _lastChangeTick;
+    private long _lastLinkDropAt = Environment.TickCount64;
     private byte[]? _remoteId;
     private readonly byte[] _fastPacket = new byte[512];
     private readonly object _fastGate = new();
@@ -538,8 +539,8 @@ public sealed class NetworkNode : IAsyncDisposable
                 var peer = _peer();
                 if (peer == null || peer.PublicKey.Length != 32)
                     continue;
-                var dial = peer.Dial ?? DeviceIdentity.CompareIds(_self.IdBytes, peer.Id.ToByteArray()) < 0;
-                if (!dial)
+                var preferredDialer = peer.Dial ?? DeviceIdentity.CompareIds(_self.IdBytes, peer.Id.ToByteArray()) < 0;
+                if (!preferredDialer && Environment.TickCount64 - Interlocked.Read(ref _lastLinkDropAt) < 5000)
                     continue;
 
                 DiscoveredPeer? nearby = null;
@@ -794,6 +795,7 @@ public sealed class NetworkNode : IAsyncDisposable
             _mouseSeal = null;
             _mouseOpen = null;
             _remoteId = null;
+            Interlocked.Exchange(ref _lastLinkDropAt, Environment.TickCount64);
         }
 
         if (link != null)

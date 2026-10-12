@@ -881,16 +881,22 @@ public sealed class ShareController : IDisposable
     private void OnLinkLost()
     {
         HeldInput lift;
+        var reconnect = false;
         lock (_gate)
         {
             StopCapture();
             lift = TakeHeld();
             _mode = ShareMode.Idle;
             if (_peer != null)
+            {
                 _detail = "The other computer disconnected.";
+                reconnect = true;
+            }
         }
 
         Lift(lift);
+        if (reconnect)
+            _node.Reconnect();
         Post(RaiseChanged);
     }
 
