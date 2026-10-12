@@ -647,6 +647,21 @@ public sealed class ShareController : IDisposable
         Missing
     }
 
+    public void ReconnectNow()
+    {
+        lock (_gate)
+        {
+            if (_peer == null)
+                return;
+            _pairError = null;
+            _detail = "Reconnecting…";
+        }
+
+        ErrorLog.Note("reconnect: requested");
+        _node.Reconnect();
+        RaiseChanged();
+    }
+
     public void Forget()
     {
         EndRelay();

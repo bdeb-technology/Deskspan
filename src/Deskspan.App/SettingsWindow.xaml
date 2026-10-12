@@ -71,7 +71,10 @@
 
       <Border x:Name="PairedCard" Background="{StaticResource Card}" CornerRadius="14" Padding="14,10" Margin="0,0,0,8" Visibility="Collapsed">
         <DockPanel>
-          <Button x:Name="ForgetButton" Content="Unpair" Style="{StaticResource QuietButton}" DockPanel.Dock="Right" Click="Forget_Click"/>
+          <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+            <Button x:Name="ReconnectButton" Content="Reconnect" Style="{StaticResource QuietButton}" Click="Reconnect_Click"/>
+            <Button x:Name="ForgetButton" Content="Unpair" Style="{StaticResource QuietButton}" Margin="8,0,0,0" Click="Forget_Click"/>
+          </StackPanel>
           <TextBlock x:Name="PeerText" VerticalAlignment="Center" FontSize="14" TextWrapping="Wrap"/>
         </DockPanel>
       </Border>

@@ -197,6 +197,8 @@ public partial class SettingsWindow : Window
         }
     }
 
+    private void Reconnect_Click(object sender, RoutedEventArgs e) => _controller.ReconnectNow();
+
     private void Forget_Click(object sender, RoutedEventArgs e) => _controller.Forget();
 
     private void ProLink_Click(object sender, RoutedEventArgs e) =>
