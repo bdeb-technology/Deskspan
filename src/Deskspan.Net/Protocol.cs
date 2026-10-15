@@ -11,7 +11,7 @@ public static class Protocol
     public const int SessionPort = 47842;
     public const int MousePort = 47843;
     public static readonly TimeSpan HeartbeatInterval = TimeSpan.FromMilliseconds(250);
-    public static readonly TimeSpan ReceiveTimeout = TimeSpan.FromSeconds(5);
+    public static readonly TimeSpan ReceiveTimeout = TimeSpan.FromSeconds(12);
     public const int MaxNameBytes = 64;
     public const int MaxPairingFrame = 4096;
     public const int MaxFrame = 65535;

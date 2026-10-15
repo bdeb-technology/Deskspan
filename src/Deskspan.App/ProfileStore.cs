@@ -11,7 +11,7 @@ internal sealed class UserProfile
     public Hotkey Hotkey { get; init; } = Hotkey.Default;
     public ControlShare ControlShare { get; init; } = ControlShare.Both;
     public StoredPeer? Peer { get; init; }
-    public DateTimeOffset? AutoConnectUntil { get; init; }
+    public bool StartWithWindows { get; init; } = true;
 }
 
 internal static class ProfileStore
@@ -46,7 +46,7 @@ internal static class ProfileStore
                         Hotkey = hotkey,
                         ControlShare = share,
                         Peer = ToPeer(dto.Peer),
-                        AutoConnectUntil = dto.AutoConnectUntil > 0 ? DateTimeOffset.FromUnixTimeSeconds(dto.AutoConnectUntil) : null
+                        StartWithWindows = dto.StartWithWindows
                     };
                 }
             }
@@ -75,7 +75,7 @@ internal static class ProfileStore
             HotkeyModifiers = (int)profile.Hotkey.Modifiers,
             HotkeyVirtualKey = profile.Hotkey.VirtualKey,
             ControlShare = (int)profile.ControlShare,
-            AutoConnectUntil = profile.AutoConnectUntil?.ToUnixTimeSeconds() ?? 0,
+            StartWithWindows = profile.StartWithWindows,
             Peer = peer == null ? null : new PeerDto
             {
                 Id = peer.Id,
@@ -124,7 +124,7 @@ internal static class ProfileStore
         public int HotkeyModifiers { get; set; }
         public int HotkeyVirtualKey { get; set; }
         public int ControlShare { get; set; }
-        public long AutoConnectUntil { get; set; }
+        public bool StartWithWindows { get; set; } = true;
         public PeerDto? Peer { get; set; }
     }
 

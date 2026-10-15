@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Windows;
 using System.Windows.Threading;
 
@@ -24,6 +25,7 @@ public partial class App : System.Windows.Application
             return;
         }
 
+        var minimized = e.Args.Any(a => string.Equals(a, "--min", StringComparison.OrdinalIgnoreCase));
         DispatcherUnhandledException += OnDispatcherException;
         _controller = new ShareController();
         _settings = new SettingsWindow(_controller);
@@ -33,7 +35,8 @@ public partial class App : System.Windows.Application
         _controller.ShowRequested += () => Dispatcher.BeginInvoke(() => _settings.ShowFromTray());
         _controller.Start();
         Refresh();
-        _settings.Show();
+        if (!minimized)
+            _settings.Show();
     }
 
     private void Refresh()

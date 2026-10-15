@@ -79,10 +79,10 @@
         </DockPanel>
       </Border>
 
-      <Border x:Name="AutoConnectCard" Background="{StaticResource Card}" CornerRadius="14" Padding="14,12" Margin="0,0,0,8" Visibility="Collapsed">
+      <Border x:Name="AutoConnectCard" Background="{StaticResource Card}" CornerRadius="14" Padding="14,12" Margin="0,0,0,8">
         <StackPanel>
-          <TextBlock Text="Stay connected" FontSize="12" Foreground="{StaticResource Muted}"/>
-          <Button x:Name="AutoConnectButton" Style="{StaticResource ChoiceButton}" Margin="0,8,0,0" Click="AutoConnect_Click"/>
+          <TextBlock Text="Startup" FontSize="12" Foreground="{StaticResource Muted}"/>
+          <Button x:Name="AutoConnectButton" Style="{StaticResource ChoiceButton}" Margin="0,8,0,0" Click="Startup_Click"/>
           <TextBlock x:Name="AutoConnectNote" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"/>
         </StackPanel>
       </Border>

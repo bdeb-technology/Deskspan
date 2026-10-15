@@ -177,6 +177,7 @@ public sealed class NetworkNode : IAsyncDisposable
     public async Task<PairedSecrets> PairAsync(IPEndPoint endpoint, string code, CancellationToken cancellationToken)
     {
         using var client = new TcpClient { NoDelay = true };
+        SocketTuning.Apply(client);
         await client.ConnectAsync(endpoint.Address, endpoint.Port, cancellationToken).ConfigureAwait(false);
         return await PairingHandshake.JoinAsync(client.GetStream(), code, _self, cancellationToken).ConfigureAwait(false);
     }
@@ -184,6 +185,7 @@ public sealed class NetworkNode : IAsyncDisposable
     public async Task<PairedSecrets> PairQuickAsync(IPEndPoint endpoint, Action<string>? showVerifyCode, CancellationToken cancellationToken)
     {
         using var client = new TcpClient { NoDelay = true };
+        SocketTuning.Apply(client);
         await client.ConnectAsync(endpoint.Address, endpoint.Port, cancellationToken).ConfigureAwait(false);
         return await PairingHandshake.JoinQuickAsync(client.GetStream(), _self, showVerifyCode, cancellationToken).ConfigureAwait(false);
     }
@@ -441,6 +443,7 @@ public sealed class NetworkNode : IAsyncDisposable
             }
 
             client.NoDelay = true;
+            SocketTuning.Apply(client);
             _ = Task.Run(() => HandleClientAsync(client, false));
         }
     }
@@ -551,14 +554,15 @@ public sealed class NetworkNode : IAsyncDisposable
         {
             try
             {
-                await Task.Delay(1000, _cancel.Token).ConfigureAwait(false);
+                var sinceDrop = Environment.TickCount64 - Interlocked.Read(ref _lastLinkDropAt);
+                await Task.Delay(sinceDrop < 8000 ? 300 : 1000, _cancel.Token).ConfigureAwait(false);
                 if (IsLinked)
                     continue;
                 var peer = _peer();
                 if (peer == null || peer.PublicKey.Length != 32)
                     continue;
                 var preferredDialer = peer.Dial ?? DeviceIdentity.CompareIds(_self.IdBytes, peer.Id.ToByteArray()) < 0;
-                if (!preferredDialer && Environment.TickCount64 - Interlocked.Read(ref _lastLinkDropAt) < 5000)
+                if (!preferredDialer && Environment.TickCount64 - Interlocked.Read(ref _lastLinkDropAt) < 2000)
                     continue;
 
                 DiscoveredPeer? nearby = null;
@@ -594,6 +598,7 @@ public sealed class NetworkNode : IAsyncDisposable
     private async Task<bool> DialDirectAsync(IPAddress address, int port)
     {
         var client = new TcpClient { NoDelay = true };
+        SocketTuning.Apply(client);
         var handedOff = false;
         try
         {
@@ -636,6 +641,7 @@ public sealed class NetworkNode : IAsyncDisposable
             return false;
         }
 
+        SocketTuning.Apply(client);
         var handedOff = false;
         try
         {

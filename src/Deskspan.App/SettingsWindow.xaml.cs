@@ -46,7 +46,7 @@ public partial class SettingsWindow : Window
         PairedCard.Visibility = paired ? Visibility.Visible : Visibility.Collapsed;
         ShareCard.Visibility = paired && !showingCode ? Visibility.Collapsed : Visibility.Visible;
         EnterCodeCard.Visibility = paired ? Visibility.Collapsed : Visibility.Visible;
-        ApplyAutoConnect(snapshot, paired && !showingCode);
+        ApplyStartup(snapshot);
         PeerText.Text = snapshot.PeerName == null ? "" : "Paired with " + snapshot.PeerName;
         PairErrorText.Text = snapshot.PairError ?? "";
         HotkeyNote.Text = snapshot.HotkeyNote;
@@ -65,27 +65,18 @@ public partial class SettingsWindow : Window
 
     private void NameBox_LostFocus(object sender, RoutedEventArgs e) => _controller.SetName(NameBox.Text);
 
-    private void ApplyAutoConnect(AppSnapshot snapshot, bool show)
+    private void ApplyStartup(AppSnapshot snapshot)
     {
-        AutoConnectCard.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-        if (!show)
-            return;
-        var on = snapshot.AutoConnectUntil is { } until && until > DateTimeOffset.Now;
-        AutoConnectButton.Content = on
-            ? "On, reconnects until " + snapshot.AutoConnectUntil!.Value.ToLocalTime().ToString("h:mm tt")
-            : "Keep connected for 24 hours";
+        var on = snapshot.StartWithWindows;
+        AutoConnectButton.Content = on ? "Start with Windows: On" : "Start with Windows: Off";
         AutoConnectNote.Text = on
-            ? "Deskspan reconnects to this PC on its own after sleep or a dropped connection. Tap to turn off."
-            : "Reconnect automatically through sleep and short internet drops for the next 24 hours.";
+            ? "Deskspan opens when Windows starts and reconnects to your paired PC on its own. Tap to turn off."
+            : "Turn on to open Deskspan at login and reconnect automatically.";
         PaintShare(AutoConnectButton, on);
     }
 
-    private void AutoConnect_Click(object sender, RoutedEventArgs e)
-    {
-        var snapshot = _controller.Snapshot();
-        var on = snapshot.AutoConnectUntil is { } until && until > DateTimeOffset.Now;
-        _controller.SetAutoConnect(!on);
-    }
+    private void Startup_Click(object sender, RoutedEventArgs e) =>
+        _controller.SetStartWithWindows(!_controller.Snapshot().StartWithWindows);
 
     private void ApplyQuickRequest(AppSnapshot snapshot)
     {

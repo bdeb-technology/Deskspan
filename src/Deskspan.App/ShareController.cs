@@ -26,7 +26,7 @@ public sealed class AppSnapshot
     public IReadOnlyList<NearbyComputer> NearbyComputers { get; init; } = [];
     public string? QuickRequestName { get; init; }
     public string? QuickRequestVerify { get; init; }
-    public DateTimeOffset? AutoConnectUntil { get; init; }
+    public bool StartWithWindows { get; init; }
 }
 
 public sealed record NearbyComputer(Guid Id, string Name);
@@ -59,7 +59,8 @@ public sealed class ShareController : IDisposable
     private int _cursorY;
     private int _sequence;
     private int _disposed;
-    private DateTimeOffset? _autoConnectUntil;
+    private bool _startWithWindows;
+    private System.Threading.Timer? _watchdog;
 
     public ShareController()
     {
@@ -68,7 +69,7 @@ public sealed class ShareController : IDisposable
         _identity = profile.Identity;
         _share = profile.ControlShare;
         _peer = profile.Peer;
-        _autoConnectUntil = profile.AutoConnectUntil;
+        _startWithWindows = profile.StartWithWindows;
         _hotkey = Hotkey.Default;
         _hub = new InputHub { Hotkey = _hotkey };
         _node = new NetworkNode(_identity, Peer, Hello);
@@ -103,9 +104,38 @@ public sealed class ShareController : IDisposable
         _node.Start();
         if (!string.IsNullOrWhiteSpace(_node.BindError))
             _detail = "Close any other Deskspan, then open this one again.";
+        StartupManager.Apply(_startWithWindows);
         Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
         NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
+        _watchdog = new System.Threading.Timer(_ => Watchdog(), null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
         RaiseChanged();
+    }
+
+    // Never gives up: while a peer is remembered and the link is down, keep hunting
+    // for it on the LAN and keep a fresh waiter parked at the relay.
+    private void Watchdog()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            return;
+        StoredPeer? peer;
+        lock (_gate)
+            peer = _peer;
+        if (peer == null || _node.IsLinked)
+            return;
+        _node.NudgeDiscovery();
+        if (peer.Relay && peer.Dial == false && !string.IsNullOrWhiteSpace(peer.RelayCode))
+            EnsureRelayHost(peer.RelayCode);
+    }
+
+    private void EnsureRelayHost(string code)
+    {
+        lock (_gate)
+        {
+            if (_relayCancel != null)
+                return;
+        }
+
+        BeginRelay(code);
     }
 
     public AppSnapshot Snapshot()
@@ -138,47 +168,39 @@ public sealed class ShareController : IDisposable
                 NearbyComputers = others,
                 QuickRequestName = _pendingQuick?.Name,
                 QuickRequestVerify = _pendingQuick?.Verify,
-                AutoConnectUntil = _autoConnectUntil
+                StartWithWindows = _startWithWindows
             };
         }
     }
 
-    public void SetAutoConnect(bool on)
+    public void SetStartWithWindows(bool on)
     {
         lock (_gate)
         {
-            _autoConnectUntil = on ? DateTimeOffset.Now.AddHours(24) : null;
+            _startWithWindows = on;
             Save();
         }
 
-        if (on)
-            _node.Reconnect();
+        StartupManager.Apply(on);
         RaiseChanged();
-    }
-
-    private bool AutoConnectActive()
-    {
-        lock (_gate)
-            return _autoConnectUntil is { } until && until > DateTimeOffset.Now;
     }
 
     private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
     {
-        if (e.Mode == Microsoft.Win32.PowerModes.Resume && AutoConnectActive())
-        {
-            ErrorLog.Note("resume: reconnecting");
-            _node.Reconnect();
-        }
+        if (e.Mode != Microsoft.Win32.PowerModes.Resume)
+            return;
+        if (Peer() == null)
+            return;
+        ErrorLog.Note("resume: reconnecting");
+        _node.Reconnect();
     }
 
     private void OnNetworkAddressChanged(object? sender, EventArgs e)
     {
+        // Only re-search. A live link is left alone; keepalive and the heartbeat
+        // detect a genuinely dead one, so a passing adapter change never drops us.
+        ErrorLog.Note("network changed: searching");
         _node.NudgeDiscovery();
-        if (AutoConnectActive())
-        {
-            ErrorLog.Note("network changed: reconnecting");
-            _node.Reconnect();
-        }
     }
 
     public void SetName(string name)
@@ -685,6 +707,7 @@ public sealed class ShareController : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+        _watchdog?.Dispose();
         Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
         EndPublish();
@@ -871,7 +894,8 @@ public sealed class ShareController : IDisposable
     {
         lock (_gate)
         {
-            if (_node.IsLinked && _mode == ShareMode.Idle && _detail == "Create a code, or enter one from the other computer.")
+            if (_node.IsLinked && _mode == ShareMode.Idle &&
+                (_detail == "Create a code, or enter one from the other computer." || _detail == "Reconnecting…"))
                 _detail = "Press the shortcut to switch.";
         }
 
@@ -889,7 +913,7 @@ public sealed class ShareController : IDisposable
             _mode = ShareMode.Idle;
             if (_peer != null)
             {
-                _detail = "The other computer disconnected.";
+                _detail = "Reconnecting…";
                 reconnect = true;
             }
         }
@@ -1025,7 +1049,7 @@ public sealed class ShareController : IDisposable
         if (linked)
             return "Connected to " + name;
         if (_peer != null)
-            return "Connecting";
+            return "Reconnecting to " + name;
         if (code != null)
             return "Share this code";
         return "Ready to pair";
@@ -1089,7 +1113,7 @@ public sealed class ShareController : IDisposable
         Hotkey = Hotkey.Default,
         ControlShare = _share,
         Peer = _peer,
-        AutoConnectUntil = _autoConnectUntil
+        StartWithWindows = _startWithWindows
     });
 
     private void Post(Action action) => _ui.Post(_ => action(), null);

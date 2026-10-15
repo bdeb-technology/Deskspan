@@ -20,6 +20,7 @@ public static class PairRelay
         if (!TryCode(code, out var digits))
             throw new ArgumentException("The pairing code is invalid.");
         var client = new TcpClient { NoDelay = true };
+        SocketTuning.Apply(client);
         try
         {
             using var connectLimit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);

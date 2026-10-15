@@ -79,7 +79,7 @@ public class ProtocolTests
         delivered.Clear();
         now += 1000;
         sequencer.Offer(10, Key(10));
-        now += 12;
+        now += 100;
         sequencer.Offer(11, Key(11));
         Assert.Equal([10u, 11u], delivered);
     }
