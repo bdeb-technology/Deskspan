@@ -27,6 +27,7 @@ public sealed class AppSnapshot
     public string? QuickRequestName { get; init; }
     public string? QuickRequestVerify { get; init; }
     public bool StartWithWindows { get; init; }
+    public bool MinimizeToTray { get; init; }
 }
 
 public sealed record NearbyComputer(Guid Id, string Name);
@@ -60,6 +61,7 @@ public sealed class ShareController : IDisposable
     private int _sequence;
     private int _disposed;
     private bool _startWithWindows;
+    private bool _minimizeToTray = true;
     private System.Threading.Timer? _watchdog;
 
     public ShareController()
@@ -70,6 +72,7 @@ public sealed class ShareController : IDisposable
         _share = profile.ControlShare;
         _peer = profile.Peer;
         _startWithWindows = profile.StartWithWindows;
+        _minimizeToTray = profile.MinimizeToTray;
         _hotkey = Hotkey.Default;
         _hub = new InputHub { Hotkey = _hotkey };
         _node = new NetworkNode(_identity, Peer, Hello);
@@ -168,7 +171,8 @@ public sealed class ShareController : IDisposable
                 NearbyComputers = others,
                 QuickRequestName = _pendingQuick?.Name,
                 QuickRequestVerify = _pendingQuick?.Verify,
-                StartWithWindows = _startWithWindows
+                StartWithWindows = _startWithWindows,
+                MinimizeToTray = _minimizeToTray
             };
         }
     }
@@ -182,6 +186,17 @@ public sealed class ShareController : IDisposable
         }
 
         StartupManager.Apply(on);
+        RaiseChanged();
+    }
+
+    public void SetMinimizeToTray(bool on)
+    {
+        lock (_gate)
+        {
+            _minimizeToTray = on;
+            Save();
+        }
+
         RaiseChanged();
     }
 
@@ -1113,7 +1128,8 @@ public sealed class ShareController : IDisposable
         Hotkey = Hotkey.Default,
         ControlShare = _share,
         Peer = _peer,
-        StartWithWindows = _startWithWindows
+        StartWithWindows = _startWithWindows,
+        MinimizeToTray = _minimizeToTray
     });
 
     private void Post(Action action) => _ui.Post(_ => action(), null);

@@ -12,8 +12,11 @@ public partial class SettingsWindow : Window
 {
     private const int WmClipboardUpdate = 0x031D;
 
+    private const double DesignMaxHeight = 820;
+
     private readonly ShareController _controller;
     private bool _searching;
+    private bool _minimizeToTray = true;
     private System.Windows.Threading.DispatcherTimer? _searchTimer;
     private IntPtr _clipboardHwnd;
 
@@ -21,6 +24,9 @@ public partial class SettingsWindow : Window
     {
         _controller = controller;
         InitializeComponent();
+        MaxHeight = Math.Min(DesignMaxHeight, SystemParameters.WorkArea.Height);
+        Loaded += (_, _) => FitToWorkArea();
+        StateChanged += OnStateChanged;
         _controller.RemoteClipboard += text => Dispatcher.BeginInvoke(() => ApplyRemoteClipboard(text));
     }
 
@@ -29,6 +35,54 @@ public partial class SettingsWindow : Window
         Show();
         WindowState = WindowState.Normal;
         Activate();
+        Dispatcher.BeginInvoke(new Action(FitToWorkArea), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    private void OnStateChanged(object? sender, EventArgs e)
+    {
+        if (WindowState == WindowState.Minimized && _minimizeToTray)
+            Hide();
+    }
+
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        FitToWorkArea();
+    }
+
+    // Keep the whole window (title bar and its minimize/close buttons included)
+    // inside the current monitor's work area, even on small or scaled displays.
+    private void FitToWorkArea()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        var screen = handle != IntPtr.Zero
+            ? System.Windows.Forms.Screen.FromHandle(handle)
+            : System.Windows.Forms.Screen.PrimaryScreen;
+        if (screen == null)
+            return;
+
+        var source = PresentationSource.FromVisual(this);
+        var scaleX = source?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+        var scaleY = source?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
+        if (scaleX <= 0) scaleX = 1.0;
+        if (scaleY <= 0) scaleY = 1.0;
+
+        var area = screen.WorkingArea;
+        var waLeft = area.Left / scaleX;
+        var waTop = area.Top / scaleY;
+        var waWidth = area.Width / scaleX;
+        var waHeight = area.Height / scaleY;
+
+        MaxHeight = Math.Min(DesignMaxHeight, waHeight);
+        MaxWidth = Math.Min(Width, waWidth);
+        UpdateLayout();
+
+        if (WindowState != WindowState.Normal || double.IsNaN(ActualWidth) || ActualWidth <= 0)
+            return;
+        if (Left < waLeft) Left = waLeft;
+        if (Top < waTop) Top = waTop;
+        if (Left + ActualWidth > waLeft + waWidth) Left = Math.Max(waLeft, waLeft + waWidth - ActualWidth);
+        if (Top + ActualHeight > waTop + waHeight) Top = Math.Max(waTop, waTop + waHeight - ActualHeight);
     }
 
     public void Apply(AppSnapshot snapshot)
@@ -47,6 +101,7 @@ public partial class SettingsWindow : Window
         ShareCard.Visibility = paired && !showingCode ? Visibility.Collapsed : Visibility.Visible;
         EnterCodeCard.Visibility = paired ? Visibility.Collapsed : Visibility.Visible;
         ApplyStartup(snapshot);
+        ApplyWindowCard(snapshot);
         PeerText.Text = snapshot.PeerName == null ? "" : "Paired with " + snapshot.PeerName;
         PairErrorText.Text = snapshot.PairError ?? "";
         HotkeyNote.Text = snapshot.HotkeyNote;
@@ -77,6 +132,19 @@ public partial class SettingsWindow : Window
 
     private void Startup_Click(object sender, RoutedEventArgs e) =>
         _controller.SetStartWithWindows(!_controller.Snapshot().StartWithWindows);
+
+    private void ApplyWindowCard(AppSnapshot snapshot)
+    {
+        _minimizeToTray = snapshot.MinimizeToTray;
+        MinimizeTrayButton.Content = _minimizeToTray ? "Minimize to tray: On" : "Minimize to tray: Off";
+        MinimizeTrayNote.Text = _minimizeToTray
+            ? "The minimize button hides Deskspan in the system tray. Double-click the tray icon to open it again."
+            : "Turn on to hide Deskspan in the system tray when you minimize it.";
+        PaintShare(MinimizeTrayButton, _minimizeToTray);
+    }
+
+    private void MinimizeTray_Click(object sender, RoutedEventArgs e) =>
+        _controller.SetMinimizeToTray(!_controller.Snapshot().MinimizeToTray);
 
     private void ApplyQuickRequest(AppSnapshot snapshot)
     {

@@ -87,6 +87,14 @@
         </StackPanel>
       </Border>
 
+      <Border x:Name="WindowCard" Background="{StaticResource Card}" CornerRadius="14" Padding="14,12" Margin="0,0,0,8">
+        <StackPanel>
+          <TextBlock Text="Window" FontSize="12" Foreground="{StaticResource Muted}"/>
+          <Button x:Name="MinimizeTrayButton" Style="{StaticResource ChoiceButton}" Margin="0,8,0,0" Click="MinimizeTray_Click"/>
+          <TextBlock x:Name="MinimizeTrayNote" Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"/>
+        </StackPanel>
+      </Border>
+
       <Border Background="{StaticResource Card}" CornerRadius="14" Padding="14,12" Margin="0,0,0,8">
         <StackPanel>
           <TextBlock Text="Share" FontSize="12" Foreground="{StaticResource Muted}"/>

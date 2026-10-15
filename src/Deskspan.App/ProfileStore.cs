@@ -12,6 +12,7 @@ internal sealed class UserProfile
     public ControlShare ControlShare { get; init; } = ControlShare.Both;
     public StoredPeer? Peer { get; init; }
     public bool StartWithWindows { get; init; } = true;
+    public bool MinimizeToTray { get; init; } = true;
 }
 
 internal static class ProfileStore
@@ -46,7 +47,8 @@ internal static class ProfileStore
                         Hotkey = hotkey,
                         ControlShare = share,
                         Peer = ToPeer(dto.Peer),
-                        StartWithWindows = dto.StartWithWindows
+                        StartWithWindows = dto.StartWithWindows,
+                        MinimizeToTray = dto.MinimizeToTray
                     };
                 }
             }
@@ -76,6 +78,7 @@ internal static class ProfileStore
             HotkeyVirtualKey = profile.Hotkey.VirtualKey,
             ControlShare = (int)profile.ControlShare,
             StartWithWindows = profile.StartWithWindows,
+            MinimizeToTray = profile.MinimizeToTray,
             Peer = peer == null ? null : new PeerDto
             {
                 Id = peer.Id,
@@ -125,6 +128,7 @@ internal static class ProfileStore
         public int HotkeyVirtualKey { get; set; }
         public int ControlShare { get; set; }
         public bool StartWithWindows { get; set; } = true;
+        public bool MinimizeToTray { get; set; } = true;
         public PeerDto? Peer { get; set; }
     }
 
