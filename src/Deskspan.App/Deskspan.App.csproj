@@ -7,6 +7,7 @@
     <RootNamespace>Deskspan</RootNamespace>
     <AssemblyName>Deskspan</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Deskspan.ico</ApplicationIcon>
     <PlatformTarget>x64</PlatformTarget>
     <SupportedOSPlatformVersion>7.0</SupportedOSPlatformVersion>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -15,5 +16,11 @@
   <ItemGroup>
     <ProjectReference Include="..\Deskspan.Input\Deskspan.Input.csproj" />
     <ProjectReference Include="..\Deskspan.Net\Deskspan.Net.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Remove="Assets\Deskspan.ico" />
+    <None Remove="Assets\Deskspan.png" />
+    <Resource Include="Assets\Deskspan.ico" />
+    <Resource Include="Assets\Deskspan.png" />
   </ItemGroup>
 </Project>

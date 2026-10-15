@@ -13,7 +13,10 @@
         SizeToContent="WidthAndHeight"
         Opacity="0"
         FontFamily="Segoe UI">
-  <Border x:Name="Bar" Background="#CC1E293B" CornerRadius="16" Padding="14,6">
-    <TextBlock x:Name="Label" Foreground="White" FontSize="12.5"/>
+  <Border x:Name="Bar" Background="#CC1E293B" CornerRadius="16" Padding="12,6">
+    <StackPanel Orientation="Horizontal">
+      <Image Source="Assets/Deskspan.png" Width="16" Height="16" RenderOptions.BitmapScalingMode="HighQuality" VerticalAlignment="Center" Margin="0,0,8,0"/>
+      <TextBlock x:Name="Label" Foreground="White" FontSize="12.5" VerticalAlignment="Center"/>
+    </StackPanel>
   </Border>
 </Window>
